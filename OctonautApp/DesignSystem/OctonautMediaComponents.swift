@@ -346,6 +346,15 @@ struct OctonautInlineMediaView: View {
     private let gallerySpacing: CGFloat = 4
     private let galleryHeight: CGFloat = 220
 
+    private var isSensitiveMedia: Bool {
+        post.isSensitive(
+            blurringNSFW: dependencies.settings.blurNSFWMedia,
+            blurringSpoilers: dependencies.settings.blurSpoilers
+        )
+    }
+
+    private var shouldBlurMedia: Bool { isSensitiveMedia && !isRevealed }
+
     private var inlineGalleryURLs: [URL] {
         if !post.galleryURLs.isEmpty { return post.galleryURLs }
         if let mediaURL = post.mediaURL { return [mediaURL] }
@@ -356,7 +365,7 @@ struct OctonautInlineMediaView: View {
         Group {
             if post.mediaKind == "video" || post.mediaKind == "gif", let url = post.mediaURL {
                 ZStack {
-                    if post.isSensitive && !isRevealed {
+                    if shouldBlurMedia {
                         ZStack {
                             Color.black
                             OctonautAsyncImage(url: post.thumbnailURL, contentMode: .fit)
@@ -382,7 +391,7 @@ struct OctonautInlineMediaView: View {
             } else if post.mediaKind == "embeddedVideo", let url = post.mediaURL,
                       let embedURL = EmbeddedVideoURL.embedURL(for: url) {
                 ZStack {
-                    if post.isSensitive && !isRevealed {
+                    if shouldBlurMedia {
                         ZStack {
                             Color.black
                             OctonautAsyncImage(url: post.thumbnailURL, contentMode: .fit)
@@ -415,7 +424,7 @@ struct OctonautInlineMediaView: View {
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .disabled(post.isSensitive && !isRevealed)
+                                .disabled(shouldBlurMedia)
                                 .accessibilityLabel("Open image \(index + 1) of \(inlineGalleryURLs.count)")
                             }
                         }
@@ -423,9 +432,9 @@ struct OctonautInlineMediaView: View {
                     }
                     .scrollTargetBehavior(.viewAligned(limitBehavior: .alwaysByOne))
                     .scrollIndicators(.hidden)
-                    .blur(radius: post.isSensitive && !isRevealed ? 12 : 0)
+                    .blur(radius: shouldBlurMedia ? 12 : 0)
                     .overlay {
-                        if post.isSensitive && !isRevealed {
+                        if shouldBlurMedia {
                             Button { isRevealed = true } label: { sensitiveOverlay }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Sensitive media. Tap to reveal.")
@@ -448,14 +457,14 @@ struct OctonautInlineMediaView: View {
                         OctonautAsyncImage(url: url, contentMode: .fit)
                             .frame(maxWidth: .infinity)
                             .frame(height: maximumHeight)
-                            .blur(radius: post.isSensitive && !isRevealed ? 12 : 0)
-                        if post.isSensitive && !isRevealed { sensitiveOverlay }
+                            .blur(radius: shouldBlurMedia ? 12 : 0)
+                        if shouldBlurMedia { sensitiveOverlay }
                     }
                 }
                 .buttonStyle(.plain)
             } else if post.mediaKind == "link" {
                 let url = post.mediaURL ?? post.shareURL
-                if post.isSensitive && !isRevealed {
+                if shouldBlurMedia {
                     Button { isRevealed = true } label: {
                         linkCard(url: url, isBlurred: true)
                     }
@@ -488,7 +497,7 @@ struct OctonautInlineMediaView: View {
                 OctonautMediaPlaceholder(
                     title: post.mediaTitle,
                     symbol: post.isVideo ? "play.fill" : "photo",
-                    isBlurred: post.isSensitive,
+                    isBlurred: isSensitiveMedia,
                     action: { openOrReveal(at: 0) }
                 )
             }
@@ -562,7 +571,7 @@ struct OctonautInlineMediaView: View {
     }
 
     private func openOrReveal(at index: Int = 0) {
-        if post.isSensitive && !isRevealed { isRevealed = true } else { onOpen?(index) }
+        if shouldBlurMedia { isRevealed = true } else { onOpen?(index) }
     }
 }
 
@@ -913,6 +922,14 @@ struct OctonautMediaViewer: View {
 
     private let saveCoordinator = OctonautMediaSaveCoordinator()
 
+    private var shouldBlurMedia: Bool {
+        guard !isRevealed else { return false }
+        return post.isSensitive(
+            blurringNSFW: dependencies.settings.blurNSFWMedia,
+            blurringSpoilers: dependencies.settings.blurSpoilers
+        )
+    }
+
     init(
         post: PostCardModel,
         initialPage: Int = 0,
@@ -961,7 +978,7 @@ struct OctonautMediaViewer: View {
                                             ZStack {
                                                 OctonautEmbeddedVideoView(url: embedURL)
                                                     .aspectRatio(16 / 9, contentMode: .fit)
-                                                if post.isSensitive && !isRevealed {
+                                                if shouldBlurMedia {
                                                     Button { isRevealed = true } label: {
                                                         VStack(spacing: 7) {
                                                             Image(systemName: "eye.slash")
@@ -982,7 +999,7 @@ struct OctonautMediaViewer: View {
                                                     accessibilityLabel: "Image \(index + 1) of \(mediaURLs.count)",
                                                     onZoomChange: { isZoomed = $0 }
                                                 )
-                                                if post.isSensitive && !isRevealed {
+                                                if shouldBlurMedia {
                                                     Button { isRevealed = true } label: {
                                                         VStack(spacing: 7) {
                                                             Image(systemName: "eye.slash")

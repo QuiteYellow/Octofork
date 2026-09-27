@@ -576,6 +576,8 @@ struct OctonautCompactPostRow: View {
     let post: PostCardModel
     var thumbnailOnRight = false
     var showsFlair = true
+    var blursNSFW = true
+    var blursSpoilers = true
     var onVote: ((Int) -> Void)?
     var onSave: (() -> Void)?
     var onOpen: (() -> Void)?
@@ -619,7 +621,7 @@ struct OctonautCompactPostRow: View {
         .overlay(alignment: .bottom) { Rectangle().fill(theme.divider).frame(height: 0.5) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "r/\(post.community), \(post.title), \(post.score) points, \(post.comments) comments"
+            "\(post.isSensitive ? "Sensitive media. " : "")r/\(post.community), \(post.title), \(post.score) points, \(post.comments) comments"
         )
         .contextMenu {
             Button {
@@ -680,22 +682,34 @@ struct OctonautCompactPostRow: View {
             .multilineTextAlignment(.leading)
     }
 
+    /// Sensitivity as the two blur preferences define it. The badge and the
+    /// blur move together, so a reader who has turned blurring off sees the
+    /// thumbnail rather than an eye-slash over a hidden image.
+    private var isBlurred: Bool {
+        post.isSensitive(blurringNSFW: blursNSFW, blurringSpoilers: blursSpoilers)
+    }
+
     private var thumbnail: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 7).fill(theme.elevatedSurface)
             if let previewURL {
+                // Scaling up under the clip pushes the blur's faded edges
+                // outside the tile, so no unblurred border survives.
                 OctonautAsyncImage(url: previewURL)
+                    .compositingGroup()
+                    .blur(radius: isBlurred ? 12 : 0)
+                    .scaleEffect(isBlurred ? 1.35 : 1)
             } else {
                 Image(systemName: post.isVideo ? "play.fill" : post.hasMedia ? "photo" : "doc.text")
                     .foregroundStyle(theme.tertiaryText)
             }
-            if post.isVideo && !post.isSensitive {
+            if post.isVideo && !isBlurred {
                 Image(systemName: "play.fill")
                     .foregroundStyle(.white)
                     .padding(7)
                     .background(.black.opacity(0.55), in: Circle())
             }
-            if post.isSensitive {
+            if isBlurred {
                 Image(systemName: "eye.slash").foregroundStyle(.white).padding(5).background(
                     .black.opacity(0.6), in: Circle())
             }

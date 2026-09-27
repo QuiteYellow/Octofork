@@ -93,6 +93,14 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
 #endif
 
     var isSensitive: Bool { isNSFW || isSpoiler }
+
+    /// Sensitivity filtered through the two blur preferences. `isSensitive`
+    /// stays unconditional so accessibility labels and badges can still
+    /// describe the post when blurring is switched off.
+    func isSensitive(blurringNSFW: Bool, blurringSpoilers: Bool) -> Bool {
+        (isNSFW && blurringNSFW) || (isSpoiler && blurringSpoilers)
+    }
+
     var fullname: String { IDNormalization.fullname(id, kind: "t3") }
     var prefersMediaFirstPresentation: Bool {
         let mediaLedKinds = ["image", "gallery", "video", "gif", "embeddedVideo"]
