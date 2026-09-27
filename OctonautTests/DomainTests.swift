@@ -1298,4 +1298,67 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(card.mediaURL?.absoluteString, "https://v.redd.it/pup123/DASH_720.mp4")
         XCTAssertNil(card.audioURL)
     }
+
+    @MainActor
+    func testVideoLooperRestartsPlaybackWhenTheItemEnds() async throws {
+        let url = try XCTUnwrap(URL(string: "https://preview.redd.it/example.gif?format=mp4"))
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        let looper = OctonautVideoLooper()
+
+        looper.attach(to: player)
+
+        // Without this the player stalls on the last frame instead of looping.
+        XCTAssertEqual(player.actionAtItemEnd, .none)
+
+        NotificationCenter.default.post(
+            name: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item
+        )
+        await Task.yield()
+
+        XCTAssertEqual(player.rate, 1, accuracy: 0.01)
+
+        looper.detach()
+        player.pause()
+
+        // After detaching, an end notification must no longer restart playback.
+        NotificationCenter.default.post(
+            name: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item
+        )
+        await Task.yield()
+
+        XCTAssertEqual(player.rate, 0, accuracy: 0.01)
+    }
+
+    @MainActor
+    func testPlaybackCoordinatorHandsThePlayheadBetweenFeedAndViewer() throws {
+        let coordinator = OctonautPlaybackCoordinator.shared
+        let url = try XCTUnwrap(URL(string: "https://v.redd.it/handoff/DASH_720.mp4"))
+
+        coordinator.endFullScreen()
+        XCTAssertFalse(coordinator.isFullScreenActive)
+
+        // The feed row records as it plays, so the viewer can pick it up.
+        coordinator.record(12.5, for: url)
+        XCTAssertEqual(try XCTUnwrap(coordinator.position(for: url)), 12.5, accuracy: 0.001)
+
+        coordinator.beginFullScreen()
+        XCTAssertTrue(coordinator.isFullScreenActive)
+
+        // The viewer advances it, and the row resumes from there on dismissal.
+        coordinator.record(30, for: url)
+        coordinator.endFullScreen()
+        XCTAssertFalse(coordinator.isFullScreenActive)
+        XCTAssertEqual(try XCTUnwrap(coordinator.position(for: url)), 30, accuracy: 0.001)
+
+        // Garbage from a not-yet-ready player must not clobber a good position.
+        coordinator.record(.nan, for: url)
+        coordinator.record(-4, for: url)
+        XCTAssertEqual(try XCTUnwrap(coordinator.position(for: url)), 30, accuracy: 0.001)
+
+        let unseen = try XCTUnwrap(URL(string: "https://v.redd.it/unseen/DASH_720.mp4"))
+        XCTAssertNil(coordinator.position(for: unseen))
+    }
 }
