@@ -226,6 +226,7 @@ final class SettingsStore {
     var restoreLastScreen: Bool { didSet { persist(restoreLastScreen, key: Keys.restoreLastScreen) } }
     var refreshVisibleFeedOnLaunch: RefreshVisibleFeedPolicy { didSet { persist(refreshVisibleFeedOnLaunch.rawValue, key: Keys.refreshVisibleFeedOnLaunch) } }
 
+    var showUsernameInAccountTab: Bool { didSet { persist(showUsernameInAccountTab, key: Keys.showUsernameInAccountTab) } }
     var confirmAccountSwitchWhileComposing: Bool { didSet { persist(confirmAccountSwitchWhileComposing, key: Keys.confirmAccountSwitchWhileComposing) } }
     var refreshAccountIdentityOnForegroundHours: Int { didSet { persist(refreshAccountIdentityOnForegroundHours, key: Keys.refreshAccountIdentityOnForegroundHours) } }
     var collectLocalUsageStatistics: Bool { didSet { persist(collectLocalUsageStatistics, key: Keys.collectLocalUsageStatistics) } }
@@ -395,6 +396,7 @@ final class SettingsStore {
         startupPostsDestination = defaults.data(forKey: Keys.startupPostsDestination).flatMap { try? JSONDecoder().decode(FeedDestination.self, from: $0) } ?? .home
         restoreLastScreen = defaults.object(forKey: Keys.restoreLastScreen) as? Bool ?? false
         refreshVisibleFeedOnLaunch = RefreshVisibleFeedPolicy(rawValue: defaults.string(forKey: Keys.refreshVisibleFeedOnLaunch) ?? "ifStale") ?? .ifStale
+        showUsernameInAccountTab = defaults.object(forKey: Keys.showUsernameInAccountTab) as? Bool ?? true
         confirmAccountSwitchWhileComposing = defaults.object(forKey: Keys.confirmAccountSwitchWhileComposing) as? Bool ?? true
         refreshAccountIdentityOnForegroundHours = defaults.object(forKey: Keys.refreshAccountIdentityOnForegroundHours) as? Int ?? 24
         collectLocalUsageStatistics = defaults.object(forKey: Keys.collectLocalUsageStatistics) as? Bool ?? true
@@ -454,6 +456,7 @@ final class SettingsStore {
         startupPostsDestination = fresh.startupPostsDestination
         restoreLastScreen = fresh.restoreLastScreen
         refreshVisibleFeedOnLaunch = fresh.refreshVisibleFeedOnLaunch
+        showUsernameInAccountTab = fresh.showUsernameInAccountTab
         confirmAccountSwitchWhileComposing = fresh.confirmAccountSwitchWhileComposing
         refreshAccountIdentityOnForegroundHours = fresh.refreshAccountIdentityOnForegroundHours
         collectLocalUsageStatistics = fresh.collectLocalUsageStatistics
@@ -545,6 +548,9 @@ final class SettingsStore {
         static let startupPostsDestination = "startup.postsDestination"
         static let restoreLastScreen = "startup.restoreLastScreen"
         static let refreshVisibleFeedOnLaunch = "startup.refreshVisibleFeedOnLaunch"
+        /// Named for the `@AppStorage` key this setting used before it moved
+        /// here, so an existing choice carries over.
+        static let showUsernameInAccountTab = "appearance.showUsername"
         static let confirmAccountSwitchWhileComposing = "accounts.confirmSwitchWhileComposing"
         static let refreshAccountIdentityOnForegroundHours = "accounts.refreshIdentityHours"
         static let collectLocalUsageStatistics = "privacy.collectLocalUsageStatistics"

@@ -7,6 +7,12 @@ struct AccountRootView: View {
     @Environment(AppDependencies.self) private var dependencies
     @State private var showingAddAccount = false
 
+    private var navigationTitle: String {
+        guard dependencies.settings.showUsernameInAccountTab,
+              let username = dependencies.accounts.selectedAccount?.username else { return "Accounts" }
+        return username
+    }
+
     var body: some View {
         Group {
             if let account = dependencies.accounts.selectedAccount, account.health == .needsLogin {
@@ -17,7 +23,7 @@ struct AccountRootView: View {
                 AccountManagerView(store: store) { showingAddAccount = true }
             }
         }
-        .navigationTitle(dependencies.accounts.selectedAccount?.username ?? "Accounts")
+        .navigationTitle(navigationTitle)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {

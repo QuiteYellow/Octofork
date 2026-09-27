@@ -284,6 +284,16 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.theme, .deepOcean)
     }
 
+    func testShowUsernameInAccountTabRoundTripsThroughDefaults() {
+        let suite = "OctonautTests.\(UUID())"
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertTrue(settings.showUsernameInAccountTab)
+        settings.showUsernameInAccountTab = false
+
+        let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertFalse(reloaded.showUsernameInAccountTab)
+    }
+
     private func post(isNSFW: Bool, isSpoiler: Bool) -> PostCardModel {
         PostCardModel(
             id: "t3_blur", community: "pics", author: "someone", title: "Title", body: "",
