@@ -723,6 +723,22 @@ enum SettingsDestination: String, CaseIterable, Identifiable, Hashable, Sendable
     }
 }
 
+/// Reddit's saved, upvoted, downvoted, and hidden listings hold posts and
+/// comments together. A screen showing one of them picks a side.
+enum UserSectionContent: String, CaseIterable, Identifiable, Hashable, Sendable {
+    case posts = "Posts"
+    case comments = "Comments"
+    var id: String { rawValue }
+}
+
+/// One page of a user-section listing. The screen that asked for it owns the
+/// rows, so pushing one section on top of another cannot cross the two.
+struct UserSectionPage: Sendable {
+    var posts: [PostCardModel] = []
+    var comments: [UserCommentCardModel] = []
+    var nextPage: String?
+}
+
 enum FeatureSearchScope: String, CaseIterable, Identifiable, Hashable, Sendable {
     case posts = "Posts"
     case communities = "Communities"
@@ -738,6 +754,7 @@ enum FeatureRoute: Hashable {
     case search(String)
     case conversation(String)
     case account(String)
+    case userSection(username: String, section: UserSection)
     case settings(SettingsDestination)
     case composer(ComposerKind)
     case gallery(FeedDescriptorModel)
@@ -1359,7 +1376,7 @@ final class OctonautFeatureStore {
                 account: selectedAccountID
             )
             async let commentsRequest = reddit.userComments(
-                normalizedUsername, after: nil, account: selectedAccountID)
+                normalizedUsername, section: .comments, after: nil, account: selectedAccountID)
             let (profile, submitted, comments) = try await (profileRequest, postsRequest, commentsRequest)
             guard !Task.isCancelled,
                 isCurrentAccount(selectedAccountID, generation: selectedGeneration),
@@ -1383,6 +1400,51 @@ final class OctonautFeatureStore {
             if !hasCachedContent {
                 userProfileState = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    /// Reads one page of a profile section such as Saved or Upvoted. The page
+    /// is returned rather than stored: each pushed section screen keeps its own
+    /// rows, so opening Upvoted from Saved cannot overwrite what is behind it.
+    ///
+    /// Feed filters are deliberately not applied. A keyword or blocked-community
+    /// rule exists to shape a feed, and silently dropping a post the reader
+    /// saved on purpose would be a worse answer than showing it.
+    func fetchUserSection(
+        _ section: UserSection,
+        username: String,
+        content: UserSectionContent = .posts,
+        after: String? = nil,
+        forceRefresh: Bool = false
+    ) async throws -> UserSectionPage {
+        guard let reddit else { return UserSectionPage() }
+        let scope = accountID.map(AccountScope.account) ?? .anonymous
+        switch content {
+        case .posts:
+            let listing = try await reddit.listing(
+                ListingRequest(
+                    feed: FeedDescriptor(
+                        destination: .user(username: username, section: section),
+                        sort: .new
+                    ),
+                    limit: 35,
+                    after: after,
+                    accountScope: scope,
+                    responseCachePolicy: forceRefresh ? .reloadIgnoringCache : .useCache
+                ),
+                account: accountID
+            )
+            return UserSectionPage(
+                posts: listing.items.map(PostCardModel.init),
+                nextPage: listing.after == after ? nil : listing.after
+            )
+        case .comments:
+            let listing = try await reddit.userComments(
+                username, section: section, after: after, account: accountID)
+            return UserSectionPage(
+                comments: listing.items.map(UserCommentCardModel.init),
+                nextPage: listing.after == after ? nil : listing.after
+            )
         }
     }
 
@@ -1856,6 +1918,38 @@ final class OctonautFeatureStore {
             }
             throw error
         }
+    }
+
+    /// Sets the saved flag for a post the visible feed may not hold, such as a
+    /// row in the Saved list. `performSave` reads the current value out of the
+    /// feed and does nothing when the post is absent, so an explicit target is
+    /// needed there.
+    func setSaved(_ saved: Bool, postID: String, accountID: AccountID) async throws {
+        guard self.accountID == accountID else { return }
+        let generation = accountGeneration
+        applySavedFlag(saved, postID: postID)
+        do {
+            let action = RedditAction.save(
+                fullname: IDNormalization.fullname(postID, kind: "t3"), saved: saved)
+            if let authenticated {
+                _ = try await authenticated.perform(action, accountID: accountID)
+            } else if let reddit {
+                _ = try await reddit.perform(action, account: accountID)
+            }
+        } catch {
+            if isCurrentAccount(accountID, generation: generation) {
+                applySavedFlag(!saved, postID: postID)
+            }
+            throw error
+        }
+    }
+
+    private func applySavedFlag(_ saved: Bool, postID: String) {
+        if let index = posts.firstIndex(where: { $0.id == postID }) {
+            posts[index].isSaved = saved
+        }
+        if detailPost?.id == postID { detailPost?.isSaved = saved }
+        updateLoadedFeedCache()
     }
 
     func markSeen(postID: String) {

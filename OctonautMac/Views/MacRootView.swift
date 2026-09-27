@@ -277,7 +277,9 @@ struct MacRootView: View {
             Task { await search.submit(query: query, scope: .posts) }
         case .mediaURL(let url), .web(let url):
             NSWorkspace.shared.open(url)
-        case .account:
+        case .account, .userSection:
+            // The Mac window has no per-section profile screen, so a profile
+            // link lands on Accounts.
             sidebarSelection = .accounts
         case .settings, .conversation, .composer, .gallery:
             break

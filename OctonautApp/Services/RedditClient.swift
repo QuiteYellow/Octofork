@@ -44,7 +44,12 @@ protocol RedditClient: Sendable {
     func trendingCommunities(limit: Int) async throws -> Listing<Community>
     func subscribedCommunities(after: String?, account: AccountID) async throws -> Listing<Community>
     func userProfile(_ username: String, account: AccountID?) async throws -> UserProfile
-    func userComments(_ username: String, after: String?, account: AccountID?) async throws -> Listing<UserComment>
+    func userComments(
+        _ username: String,
+        section: UserSection,
+        after: String?,
+        account: AccountID?
+    ) async throws -> Listing<UserComment>
     func perform(_ action: RedditAction, account: AccountID) async throws -> ActionResult
 }
 
@@ -142,6 +147,12 @@ actor URLSessionRedditClient: RedditClient {
         ]
         if let topTime = request.feed.topTime, request.feed.sort.acceptsTopTime {
             query.append(URLQueryItem(name: "t", value: topTime.rawValue))
+        }
+        // A saved, upvoted, downvoted, hidden, or overview listing interleaves
+        // posts and comments. This method can only return posts, so ask Reddit
+        // for links and keep every page as full as the limit allows.
+        if case .user(_, let section) = request.feed.destination, section.mixesPostsAndComments {
+            query.append(URLQueryItem(name: "type", value: "links"))
         }
         appendPagination(after: request.after, before: request.before, to: &query)
         let data: Data
@@ -311,15 +322,23 @@ actor URLSessionRedditClient: RedditClient {
         return try RedditJSONCodec.decodeUserProfile(data)
     }
 
-    func userComments(_ username: String, after: String? = nil, account: AccountID? = nil) async throws -> Listing<UserComment> {
+    func userComments(
+        _ username: String,
+        section: UserSection = .comments,
+        after: String? = nil,
+        account: AccountID? = nil
+    ) async throws -> Listing<UserComment> {
         var query = [
             URLQueryItem(name: "raw_json", value: "1"),
             URLQueryItem(name: "limit", value: "50")
         ]
+        if section.mixesPostsAndComments {
+            query.append(URLQueryItem(name: "type", value: "comments"))
+        }
         if let after { query.append(URLQueryItem(name: "after", value: after)) }
         let data = try await requestData(
             method: "GET",
-            path: "/user/\(pathSegment(username))/comments.json",
+            path: userSectionPath(username: username, section: section),
             query: query,
             body: nil,
             account: account,
@@ -507,6 +526,11 @@ actor URLSessionRedditClient: RedditClient {
     private func feedPath(_ request: FeedDescriptor) -> String {
         let destination: String
         switch request.destination {
+        case .user(let username, let section):
+            // `/user/{name}/{section}` is the whole route. Reddit takes the
+            // sort as a query item here, and a trailing sort path segment
+            // turns the request into a 404.
+            return userSectionPath(username: username, section: section)
         case .home: destination = ""
         case .popular: destination = "/r/popular"
         case .all: destination = "/r/all"
@@ -516,8 +540,6 @@ actor URLSessionRedditClient: RedditClient {
             destination = "/r/\(normalized)"
         case .multireddit(let owner, let name):
             destination = "/user/\(pathSegment(owner))/m/\(pathSegment(name))"
-        case .user(let username, let section):
-            destination = "/user/\(pathSegment(username))/\(section.rawValue)"
         case .search:
             destination = "/search"
         case .url(let url):
@@ -525,6 +547,10 @@ actor URLSessionRedditClient: RedditClient {
         }
         let sort = redditSort(request.sort)
         return "\(destination)/\(sort).json"
+    }
+
+    private func userSectionPath(username: String, section: UserSection) -> String {
+        "/user/\(pathSegment(username))/\(section.rawValue).json"
     }
 
     private func postJSONRoute(for permalink: URL) -> (path: String, query: [URLQueryItem]) {

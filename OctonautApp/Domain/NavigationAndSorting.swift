@@ -122,6 +122,48 @@ enum UserSection: String, Codable, Hashable, Sendable, CaseIterable {
     case upvoted
     case downvoted
     case hidden
+
+    var title: String {
+        switch self {
+        case .overview: return "Overview"
+        case .submitted: return "Posts"
+        case .comments: return "Comments"
+        case .saved: return "Saved"
+        case .upvoted: return "Upvoted"
+        case .downvoted: return "Downvoted"
+        case .hidden: return "Hidden"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .overview: return "rectangle.stack"
+        case .submitted: return "doc.text"
+        case .comments: return "text.bubble"
+        case .saved: return "bookmark"
+        case .upvoted: return "arrow.up"
+        case .downvoted: return "arrow.down"
+        case .hidden: return "eye.slash"
+        }
+    }
+
+    /// Reddit serves these only to the signed-in owner of the profile.
+    var isPrivateToOwner: Bool {
+        switch self {
+        case .saved, .upvoted, .downvoted, .hidden: return true
+        case .overview, .submitted, .comments: return false
+        }
+    }
+
+    /// Sections whose listings interleave posts and comments. Reddit narrows
+    /// them with `type=links` or `type=comments`, which keeps a page of a post
+    /// listing from arriving nearly empty once the comments are dropped.
+    var mixesPostsAndComments: Bool {
+        switch self {
+        case .overview, .saved, .upvoted, .downvoted, .hidden: return true
+        case .submitted, .comments: return false
+        }
+    }
 }
 
 enum SearchScope: String, Codable, Hashable, Sendable, CaseIterable {
