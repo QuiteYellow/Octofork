@@ -70,3 +70,6 @@ Octofork*.xcodeproj/
 fork/*-Info.plist
 script/build_fork_*.sh
 build/
+
+# Local working files: PR drafts, scratch notes, one-off scripts
+local-tools/
