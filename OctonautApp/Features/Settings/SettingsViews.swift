@@ -40,7 +40,6 @@ struct SettingsDetailView: View {
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
     @Environment(AppDependencies.self) private var dependencies
-    @AppStorage("appearance.showUsername") private var showUsername = true
     @State private var showingReset = false
     @State private var showingAppReset = false
     @State private var isResettingApp = false
@@ -296,7 +295,7 @@ struct SettingsDetailView: View {
     private var account: some View {
         Section {
             NavigationLink(value: FeatureRoute.account(store.accounts.first?.username ?? "Accounts")) { Label("Manage Accounts", systemImage: "person.2") }
-            Toggle("Show username in Account tab", isOn: $showUsername)
+            Toggle("Show username in Account tab", isOn: Binding(get: { dependencies.settings.showUsernameInAccountTab }, set: { dependencies.settings.showUsernameInAccountTab = $0 }))
             Toggle("Confirm account switch while composing", isOn: Binding(get: { dependencies.settings.confirmAccountSwitchWhileComposing }, set: { dependencies.settings.confirmAccountSwitchWhileComposing = $0 }))
             Text("Account sessions are isolated. Removing an account also removes its Keychain credential and private cached data.")
                 .font(.footnote).foregroundStyle(.secondary)
