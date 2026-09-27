@@ -263,6 +263,39 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(reloaded.theme, .deepOcean)
     }
 
+    private func post(isNSFW: Bool, isSpoiler: Bool) -> PostCardModel {
+        PostCardModel(
+            id: "t3_blur", community: "pics", author: "someone", title: "Title", body: "",
+            score: 1, comments: 0, age: "1h", vote: 0, isSaved: false, isSeen: false,
+            isNSFW: isNSFW, isSpoiler: isSpoiler, isSticky: false, isVideo: false,
+            hasMedia: true, mediaTitle: "",
+            shareURL: URL(string: "https://www.reddit.com/r/pics/comments/blur")!
+        )
+    }
+
+    func testBlurPreferencesGateSensitivityPerKind() {
+        let nsfw = post(isNSFW: true, isSpoiler: false)
+        let spoiler = post(isNSFW: false, isSpoiler: true)
+        let both = post(isNSFW: true, isSpoiler: true)
+        let neither = post(isNSFW: false, isSpoiler: false)
+
+        for post in [nsfw, spoiler, both] {
+            XCTAssertTrue(post.isSensitive(blurringNSFW: true, blurringSpoilers: true))
+            XCTAssertFalse(post.isSensitive(blurringNSFW: false, blurringSpoilers: false))
+        }
+        XCTAssertFalse(neither.isSensitive(blurringNSFW: true, blurringSpoilers: true))
+
+        // Each toggle only suppresses its own kind.
+        XCTAssertFalse(nsfw.isSensitive(blurringNSFW: false, blurringSpoilers: true))
+        XCTAssertTrue(spoiler.isSensitive(blurringNSFW: false, blurringSpoilers: true))
+        XCTAssertTrue(nsfw.isSensitive(blurringNSFW: true, blurringSpoilers: false))
+        XCTAssertFalse(spoiler.isSensitive(blurringNSFW: true, blurringSpoilers: false))
+
+        // A post that is both stays blurred until both toggles are off.
+        XCTAssertTrue(both.isSensitive(blurringNSFW: true, blurringSpoilers: false))
+        XCTAssertTrue(both.isSensitive(blurringNSFW: false, blurringSpoilers: true))
+    }
+
     func testAutomaticCommentSummaryRoundTripsThroughDefaults() {
         let suite = "OctonautTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!

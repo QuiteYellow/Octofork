@@ -348,8 +348,15 @@ struct GalleryView: View {
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
 
+    @Environment(AppDependencies.self) private var dependencies
     @State private var selectedItem: GalleryMediaItem?
-    @State private var blurNSFW = true
+    /// A per-visit override of the blur preferences, so the toolbar button can
+    /// unblur this grid without changing the saved setting.
+    @State private var revealsSensitiveMedia = false
+
+    private var blursSensitiveMedia: Bool {
+        dependencies.settings.blurNSFWMedia || dependencies.settings.blurSpoilers
+    }
 
     private var items: [GalleryMediaItem] {
         GalleryMediaItem.items(from: store.posts.filter {
@@ -364,7 +371,11 @@ struct GalleryView: View {
                     ForEach(0..<2) { column in
                         LazyVStack(spacing: 4) {
                             ForEach(Array(items.enumerated()).filter { $0.offset % 2 == column }.map(\.element)) { item in
-                                GalleryMediaTile(item: item, blurNSFW: blurNSFW) { selectedItem = item }
+                                GalleryMediaTile(
+                                    item: item,
+                                    blursNSFW: dependencies.settings.blurNSFWMedia && !revealsSensitiveMedia,
+                                    blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia
+                                ) { selectedItem = item }
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -402,14 +413,16 @@ struct GalleryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    blurNSFW.toggle()
-                } label: {
-                    Label("NSFW blur", systemImage: blurNSFW ? "eye.slash" : "eye")
+                if blursSensitiveMedia {
+                    Button {
+                        revealsSensitiveMedia.toggle()
+                    } label: {
+                        Label("Sensitive media blur", systemImage: revealsSensitiveMedia ? "eye" : "eye.slash")
+                    }
+                    .accessibilityLabel("Sensitive media blur")
+                    .accessibilityValue(revealsSensitiveMedia ? "Off" : "On")
+                    .accessibilityHint(revealsSensitiveMedia ? "Blur sensitive images" : "Show sensitive images")
                 }
-                .accessibilityLabel("NSFW blur")
-                .accessibilityValue(blurNSFW ? "On" : "Off")
-                .accessibilityHint(blurNSFW ? "Show NSFW images" : "Blur NSFW images")
             }
         }
         .task { await store.refreshPosts(for: descriptor) }

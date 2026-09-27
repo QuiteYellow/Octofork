@@ -267,7 +267,9 @@ struct UserProfileView: View {
                     NavigationLink(value: FeatureRoute.post(post)) {
                         OctonautCompactPostRow(
                             post: post,
-                            showsFlair: dependencies.settings.showPostFlair
+                            showsFlair: dependencies.settings.showPostFlair,
+                            blursNSFW: dependencies.settings.blurNSFWMedia,
+                            blursSpoilers: dependencies.settings.blurSpoilers
                         )
                     }
                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))

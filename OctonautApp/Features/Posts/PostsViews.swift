@@ -311,7 +311,7 @@ struct FeedView: View {
                         ForEach(Array(visiblePosts.enumerated()), id: \.element.id) { index, post in
                             Group {
                                 if compactRows {
-                                    OctonautCompactPostRow(post: post, thumbnailOnRight: thumbnailOnRight, showsFlair: dependencies.settings.showPostFlair, onVote: { value in performVote(postID: post.id, value: value) }, onSave: { performSave(postID: post.id) }, onOpen: { open(post) }, onCommunityOpen: { open(post) })
+                                    OctonautCompactPostRow(post: post, thumbnailOnRight: thumbnailOnRight, showsFlair: dependencies.settings.showPostFlair, blursNSFW: dependencies.settings.blurNSFWMedia, blursSpoilers: dependencies.settings.blurSpoilers, onVote: { value in performVote(postID: post.id, value: value) }, onSave: { performSave(postID: post.id) }, onOpen: { open(post) }, onCommunityOpen: { open(post) })
                                 } else {
                                     OctonautPostRow(
                                         post: post,
