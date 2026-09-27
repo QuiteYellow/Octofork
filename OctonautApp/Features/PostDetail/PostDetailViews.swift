@@ -77,7 +77,7 @@ struct PostDetailView: View {
                             Text("Comments could not be loaded").font(.subheadline.weight(.semibold))
                             Text(message).font(.caption).foregroundStyle(.secondary)
                             Button("Retry") {
-                                Task { await store.loadPostDetail(for: currentPost, sort: commentSort) }
+                                Task { await store.loadPostDetail(for: currentPost, sort: commentSort, forceRefresh: true) }
                             }
                             .font(.caption.weight(.semibold))
                         }
@@ -98,6 +98,8 @@ struct PostDetailView: View {
                             PostSummaryInput(id: currentPost.id, title: currentPost.title, body: currentPost.body)
                         ),
                         intelligence: dependencies.intelligence,
+                        cache: dependencies.summaryCache,
+                        modelFamily: dependencies.summaryCacheModelFamily,
                         automatic: dependencies.settings.automaticVisibleSummaries,
                         useFallback: dependencies.settings.keyExcerptsFallback
                     )
@@ -111,6 +113,8 @@ struct PostDetailView: View {
                             CommentSummaryInput(postID: currentPost.id, comments: summaryComments)
                         ),
                         intelligence: dependencies.intelligence,
+                        cache: dependencies.summaryCache,
+                        modelFamily: dependencies.summaryCacheModelFamily,
                         automatic: dependencies.settings.automaticCommentSummaries,
                         useFallback: dependencies.settings.keyExcerptsFallback
                     )

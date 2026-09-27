@@ -849,6 +849,16 @@ final class OctonautFeatureStore {
         let filterRevision: Int
         let storedAt: Date
     }
+    private struct DetailCacheKey: Hashable {
+        let postID: String
+        let sort: String
+        let accountID: AccountID?
+    }
+    private struct DetailCacheEntry {
+        let post: PostCardModel
+        let comments: [CommentCardModel]
+        let storedAt: Date
+    }
 
     @ObservationIgnored private let reddit: (any RedditClient)?
     @ObservationIgnored private let authenticated: (any AuthenticatedRedditService)?
@@ -867,6 +877,10 @@ final class OctonautFeatureStore {
     @ObservationIgnored private var loadedFeed: FeedDescriptorModel?
     @ObservationIgnored private var feedCache: [FeedDescriptorModel: FeedCacheEntry] = [:]
     @ObservationIgnored private let feedCacheFreshness: TimeInterval = 15 * 60
+    @ObservationIgnored private var detailCache: [DetailCacheKey: DetailCacheEntry] = [:]
+    @ObservationIgnored private let detailCacheFreshness: TimeInterval = 10 * 60
+    @ObservationIgnored private let detailCacheCapacity = 20
+    @ObservationIgnored private var visibleDetailKey: DetailCacheKey?
     @ObservationIgnored private var communitiesRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var communitiesRefreshID: UUID?
     var posts: [PostCardModel] = [
@@ -1021,6 +1035,8 @@ final class OctonautFeatureStore {
         communitiesRefreshTask = nil
         communitiesRefreshID = nil
         feedCache.removeAll()
+        detailCache.removeAll()
+        visibleDetailKey = nil
         nextPage = nil
         loadedFeed = nil
         detailPost = nil
@@ -1054,7 +1070,9 @@ final class OctonautFeatureStore {
     }
 
     func clearPostDetail() {
+        saveVisibleDetail()
         detailRequestID = UUID()
+        visibleDetailKey = nil
         detailPost = nil
         comments = []
         moreLoadingIDs.removeAll()
@@ -1355,15 +1373,31 @@ final class OctonautFeatureStore {
     func loadPostDetail(
         for post: PostCardModel,
         sort: String = "Best",
-        preservingVisibleComments: Bool = false
+        preservingVisibleComments: Bool = false,
+        forceRefresh: Bool = false
     ) async -> Bool {
         if screenshotMode {
             detailPost = post
             detailState = .loaded
             return true
         }
+        let key = DetailCacheKey(postID: post.id, sort: sort.lowercased(), accountID: accountID)
+        saveVisibleDetail()
+        if !forceRefresh, let cached = detailCache[key],
+           Date.now.timeIntervalSince(cached.storedAt) < detailCacheFreshness {
+            detailRequestID = UUID()
+            detailPost = cached.post
+            comments = cached.comments
+            visibleDetailKey = key
+            moreLoadingIDs.removeAll()
+            moreFailedIDs.removeAll()
+            detailState = .loaded
+            return true
+        }
+        detailCache.removeValue(forKey: key)
         let requestID = UUID()
         detailRequestID = requestID
+        visibleDetailKey = nil
         if !preservingVisibleComments {
             detailState = .loading
             detailPost = post
@@ -1398,6 +1432,9 @@ final class OctonautFeatureStore {
             }
             moreFailedIDs.removeAll()
             detailState = .loaded
+            visibleDetailKey = key
+            detailCache[key] = DetailCacheEntry(post: detailPost ?? post, comments: comments, storedAt: .now)
+            trimDetailCache()
             return true
         } catch is CancellationError {
             return false
@@ -1474,6 +1511,7 @@ final class OctonautFeatureStore {
                 )
             }
             replaceComment(withID: commentID, in: &comments, with: replacements)
+            saveVisibleDetail()
         } catch is CancellationError {
             return
         } catch {
@@ -1491,6 +1529,22 @@ final class OctonautFeatureStore {
             if let nested = comment(withID: id, in: value.children) { return nested }
         }
         return nil
+    }
+
+    private func saveVisibleDetail() {
+        guard let key = visibleDetailKey, let detailPost,
+              let existing = detailCache[key],
+              Date.now.timeIntervalSince(existing.storedAt) < detailCacheFreshness else { return }
+        detailCache[key] = DetailCacheEntry(post: detailPost, comments: comments, storedAt: existing.storedAt)
+    }
+
+    private func trimDetailCache() {
+        if detailCache.count > detailCacheCapacity {
+            for key in detailCache.sorted(by: { $0.value.storedAt < $1.value.storedAt })
+                .prefix(detailCache.count - detailCacheCapacity).map(\.key) {
+                detailCache.removeValue(forKey: key)
+            }
+        }
     }
 
     private func replaceComment(
@@ -1631,6 +1685,8 @@ final class OctonautFeatureStore {
         self.accountID = accountID
         accountGeneration &+= 1
         feedCache.removeAll()
+        detailCache.removeAll()
+        visibleDetailKey = nil
         nextPage = nil
         loadedFeed = nil
         detailPost = nil

@@ -180,6 +180,27 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(store.detailState, .idle)
     }
 
+    func testReopeningPostUsesCachedCommentsUntilRefresh() async throws {
+        let thread = Data(#"[{"data":{"children":[{"kind":"t3","data":{"id":"sample","name":"t3_sample","title":"Cached post","subreddit":"swift","permalink":"/r/swift/comments/sample/title/","author":"reader"}}]}},{"data":{"children":[{"kind":"t1","data":{"id":"reply","name":"t1_reply","parent_id":"t3_sample","body":"Cached comment","author":"reply_author","created_utc":1700000000}}]}}]"#.utf8)
+        let client = FixtureRedditClient(postData: thread)
+        let store = OctonautFeatureStore(reddit: client)
+
+        let firstLoad = await store.loadPostDetail(for: .sample)
+        XCTAssertTrue(firstLoad)
+        XCTAssertEqual(store.comments.count, 1)
+        store.clearPostDetail()
+        let secondLoad = await store.loadPostDetail(for: .sample)
+        XCTAssertTrue(secondLoad)
+        XCTAssertEqual(store.comments.count, 1)
+        let requestsAfterReopen = await client.postRequests()
+        XCTAssertEqual(requestsAfterReopen, 1)
+
+        let refreshed = await store.loadPostDetail(for: .sample, forceRefresh: true)
+        XCTAssertTrue(refreshed)
+        let requestsAfterRefresh = await client.postRequests()
+        XCTAssertEqual(requestsAfterRefresh, 2)
+    }
+
     func testCustomFeedLoadsCombinedCommunitiesWithoutAnAccount() async throws {
         let client = FixtureRedditClient(listingData: Data(#"{"data":{"children":[],"after":null}}"#.utf8))
         let store = OctonautFeatureStore(reddit: client)

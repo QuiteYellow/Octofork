@@ -11,9 +11,16 @@ final class AppDependencies {
     let persistence: any PersistenceStore
     let media: any MediaService
     let intelligence: any IntelligenceService
+    let summaryCache = InMemorySummaryCache(lifetime: 24 * 60 * 60, capacity: 100)
     let summaryAPIKeyStore: any SummaryAPIKeyStore
     let links: any LinkRouter
     let settings: SettingsStore
+    var summaryCacheModelFamily: String {
+        switch settings.summaryProvider {
+        case .onDevice: "on-device"
+        case .openAICompatible: "\(settings.summaryEndpoint)|\(settings.summaryModel)"
+        }
+    }
     private(set) var resetGeneration: UInt = 0
 
     init(
@@ -61,6 +68,7 @@ final class AppDependencies {
 
         settings.removeAllData()
         RedditResponseCache.removeAll()
+        await summaryCache.removeAll()
         URLCache.shared.removeAllCachedResponses()
         await SubscribedCommunitiesCache.shared.removeAll()
         await UserProfileCache.shared.removeAll()
