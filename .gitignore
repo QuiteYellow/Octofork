@@ -64,7 +64,9 @@ fastlane/test_output
 
 # Fork-local build config and generated artifacts
 .env
-Octofork.xcodeproj/
-fork/Octofork-Info.plist
-fork/Octofork-Mac-Info.plist
+.env.*
+!.env.example
+Octofork*.xcodeproj/
+fork/*-Info.plist
+script/build_fork_*.sh
 build/

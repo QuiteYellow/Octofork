@@ -30,7 +30,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: fork/Octofork.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: ${OCTOFORK_DISPLAY_NAME}
     info:
-      path: fork/Octofork-Info.plist
+      path: fork/${OCTOFORK_PROJECT_NAME}-Info.plist
       properties:
         CFBundleURLTypes:
           - CFBundleURLName: ${OCTOFORK_BUNDLE_ID}
@@ -51,7 +51,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: fork/Octofork-Mac.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: ${OCTOFORK_DISPLAY_NAME}
     info:
-      path: fork/Octofork-Mac-Info.plist
+      path: fork/${OCTOFORK_PROJECT_NAME}-Mac-Info.plist
       properties:
         CFBundleURLTypes:
           - CFBundleURLName: ${OCTOFORK_BUNDLE_ID}

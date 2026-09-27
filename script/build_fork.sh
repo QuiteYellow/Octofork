@@ -23,14 +23,27 @@ info() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 
 command -v xcodegen >/dev/null || die "xcodegen not installed. Run: brew install xcodegen"
 
-[[ -f .env ]] || die ".env not found. Run: cp .env.example .env  (then fill it in)"
+# Each env file describes one installable variant. Everything downstream keys
+# off OCTOFORK_PROJECT_NAME, so two variants never share a generated project
+# or Info.plist.
+ENV_FILE="${OCTOFORK_ENV:-.env}"
+while [[ "${1:-}" == --env || "${1:-}" == --env=* ]]; do
+    if [[ "$1" == --env=* ]]; then
+        ENV_FILE="${1#--env=}"; shift
+    else
+        [[ -n "${2:-}" ]] || die "--env needs a file"
+        ENV_FILE="$2"; shift 2
+    fi
+done
+
+[[ -f "$ENV_FILE" ]] || die "$ENV_FILE not found. Run: cp .env.example $ENV_FILE  (then fill it in)"
 
 # shellcheck disable=SC1091
-set -a; source .env; set +a
+set -a; source "$ENV_FILE"; set +a
 
 for var in OCTOFORK_DEVELOPMENT_TEAM OCTOFORK_BUNDLE_ID OCTOFORK_BUNDLE_PREFIX \
            OCTOFORK_DISPLAY_NAME OCTOFORK_URL_SCHEME OCTOFORK_PROJECT_NAME; do
-    [[ -n "${!var:-}" ]] || die "$var is not set in .env (see .env.example)"
+    [[ -n "${!var:-}" ]] || die "$var is not set in $ENV_FILE (see .env.example)"
 done
 
 if [[ "$OCTOFORK_BUNDLE_ID" == "com.leddytech.octonaut" ]]; then
@@ -41,7 +54,7 @@ PROJECT="${OCTOFORK_PROJECT_NAME}.xcodeproj"
 SCHEME="Octonaut"
 
 generate() {
-    info "Generating $PROJECT  (bundle $OCTOFORK_BUNDLE_ID, team $OCTOFORK_DEVELOPMENT_TEAM)"
+    info "Generating $PROJECT from $ENV_FILE  (bundle $OCTOFORK_BUNDLE_ID)"
     xcodegen generate --spec project.fork.yml --project . >/dev/null
     # Guard against a spec change silently reverting identity to upstream's.
     local actual
@@ -53,7 +66,8 @@ generate() {
 
     # XcodeGen's `include` concatenates arrays instead of overriding them, so
     # the generated plists inherit upstream's octonaut:// scheme next to ours.
-    for plist in fork/Octofork-Info.plist fork/Octofork-Mac-Info.plist; do
+    for plist in "fork/${OCTOFORK_PROJECT_NAME}-Info.plist" \
+                 "fork/${OCTOFORK_PROJECT_NAME}-Mac-Info.plist"; do
         [[ -f "$plist" ]] || continue
         python3 script/prune_url_schemes.py "$plist" \
             || die "failed to prune URL schemes in $plist"
