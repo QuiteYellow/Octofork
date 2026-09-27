@@ -227,6 +227,36 @@ struct OctonautTabsView: View {
     private var usesSidebarTabBar: Bool {
         OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass)
             && !dependencies.settings.showBottomNavigationOnLargeScreens
+            && !isRunningAsIOSAppOnMac
+    }
+
+    /// Running "Designed for iPad" on macOS, activating the search field
+    /// crashes UIKit before any app code runs:
+    ///
+    ///   _UISearchControllerInPlaceSearchBarAnimator animateTransition:
+    ///     -> _UITabContainerView setSuppressTabBar:
+    ///     -> _UITabBarControllerAdaptiveVisualStyle
+    ///          _updateContentLayoutForSidebarAppearanceIfNeeded
+    ///     -> UITabBarController _performSidebarTransition:
+    ///     -> _UISearchPresentationController _layoutPresentationWithSize:
+    ///     -> UINavigationBar defaultSizeForOrientation:
+    ///     -> UIScreen _mainSceneBoundsForInterfaceOrientation:
+    ///     -> UIScreen _preferredFocusedWindow
+    ///     -> "Accessing the focus system through UIScreen is no longer
+    ///        supported." (NSInternalInconsistencyException)
+    ///
+    /// Suppressing the tab bar for the search transition drives the adaptive
+    /// sidebar style into a layout pass that asks UIScreen for scene bounds,
+    /// and UIScreen answers through a focus API UIKit itself has withdrawn.
+    /// Every frame is UIKit's; nothing here is reachable from app code.
+    ///
+    /// Falling back to the plain tab bar on this platform keeps the adaptive
+    /// sidebar style -- and therefore that layout pass -- out of the picture.
+    /// iPad and iPhone are unaffected. Remove once UIKit no longer takes this
+    /// path; the native OctonautMac target is the better Mac experience
+    /// regardless.
+    private var isRunningAsIOSAppOnMac: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
     }
 
     private var persistentTabContent: some View {
