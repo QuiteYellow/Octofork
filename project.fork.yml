@@ -1,0 +1,61 @@
+# Fork overlay for local device builds.
+#
+# This file deliberately does NOT modify project.yml. It includes upstream's
+# spec and overrides only the identity-bearing settings, so pulling upstream
+# changes stays a clean merge. Values come from .env (untracked) via the
+# environment -- see .env.example.
+#
+# Generate with script/build_fork.sh, never `xcodegen generate` on its own,
+# or the ${...} placeholders below expand to empty strings.
+
+name: ${OCTOFORK_PROJECT_NAME}
+
+include:
+  - project.yml
+
+options:
+  bundleIdPrefix: ${OCTOFORK_BUNDLE_PREFIX}
+
+settings:
+  base:
+    DEVELOPMENT_TEAM: ${OCTOFORK_DEVELOPMENT_TEAM}
+    CODE_SIGN_STYLE: Automatic
+    EXCLUDED_SOURCE_FILE_NAMES: Info.plist
+
+targets:
+  Octonaut:
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${OCTOFORK_BUNDLE_ID}
+        CODE_SIGN_ENTITLEMENTS: fork/Octofork.entitlements
+        INFOPLIST_KEY_CFBundleDisplayName: ${OCTOFORK_DISPLAY_NAME}
+    info:
+      path: fork/Octofork-Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: ${OCTOFORK_BUNDLE_ID}
+            CFBundleURLSchemes:
+              - ${OCTOFORK_URL_SCHEME}
+        ITSAppUsesNonExemptEncryption: false
+
+  OctonautTests:
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${OCTOFORK_BUNDLE_ID}.tests
+
+  OctonautMac:
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${OCTOFORK_BUNDLE_ID}
+        PRODUCT_NAME: ${OCTOFORK_DISPLAY_NAME}
+        CODE_SIGN_ENTITLEMENTS: fork/Octofork-Mac.entitlements
+        INFOPLIST_KEY_CFBundleDisplayName: ${OCTOFORK_DISPLAY_NAME}
+    info:
+      path: fork/Octofork-Mac-Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: ${OCTOFORK_BUNDLE_ID}
+            CFBundleURLSchemes:
+              - ${OCTOFORK_URL_SCHEME}
+        ITSAppUsesNonExemptEncryption: false
+        NSPhotoLibraryAddUsageDescription: Saves Reddit images and videos to your Photos library when you choose Save all to Photos.

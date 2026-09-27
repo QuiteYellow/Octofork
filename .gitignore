@@ -61,3 +61,10 @@ fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
 .DS_Store
+
+# Fork-local build config and generated artifacts
+.env
+Octofork.xcodeproj/
+fork/Octofork-Info.plist
+fork/Octofork-Mac-Info.plist
+build/
