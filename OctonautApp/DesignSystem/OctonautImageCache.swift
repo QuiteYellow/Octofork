@@ -99,7 +99,13 @@ enum OctonautImageCache {
     }
 
     static func cachedImage(for url: URL) -> UIImage? {
-        decodedImages.object(forKey: url as NSURL)
+#if DEBUG
+        if url.scheme == "octonaut-screenshot", let name = url.host,
+           let path = Bundle.main.path(forResource: name, ofType: "png") {
+            return UIImage(contentsOfFile: path)
+        }
+#endif
+        return decodedImages.object(forKey: url as NSURL)
     }
 
     static func configure(diskCapacityMB: Int) async {

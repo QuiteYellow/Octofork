@@ -7,11 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0329177044D310FCBCA2D05D /* Octonaut-Pearl-Plush.icon in Resources */ = {isa = PBXBuildFile; fileRef = D52445C2A6F0D8879597C9BA /* Octonaut-Pearl-Plush.icon */; };
 		08060A11B6E0BA5D5C22A2CB /* AuthenticatedRedditService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AED1B10BB194C559D09C670 /* AuthenticatedRedditService.swift */; };
 		08FE98856267A5EE1B55B6BA /* PostDetailViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C47C731DABDE858CD85DCD0 /* PostDetailViews.swift */; };
 		092B3A073DF3759AE1138283 /* RedditSessionValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF65D3D48202B73A6543DEA3 /* RedditSessionValidator.swift */; };
 		0B8DE71E9DEE38AFB34CBE4B /* FeatureLoadState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 008D4295D6BE53BBBF2036FC /* FeatureLoadState.swift */; };
 		0C4A3EC44BE67AD49EE28E2D /* RedditMarkdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9C3584BE0308BF8A528138A /* RedditMarkdown.swift */; };
+		0F3E83CDEF16B0DF8CE075C7 /* Octonaut-Frosted-Pink.icon in Resources */ = {isa = PBXBuildFile; fileRef = 19664B0ED28F51BB0516657E /* Octonaut-Frosted-Pink.icon */; };
 		1094829821DCA93F9ADFF9C9 /* AccountViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8942179C018EA8B2E768B538 /* AccountViews.swift */; };
 		1458E12850EA26CFD147473F /* RedditModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6404DD225DDA45A486E4CBEE /* RedditModels.swift */; };
 		152A4EECDD4550E1DE717E0E /* FixtureRedditClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C883878DD07372A87014F548 /* FixtureRedditClient.swift */; };
@@ -26,6 +28,7 @@
 		227750349A55274132113B78 /* SearchRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = D430638EEFFA69BEE5F13F7C /* SearchRuntime.swift */; };
 		2897413042525892775F6C74 /* KeychainSecretStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67648004928F4AA64F0C2BE2 /* KeychainSecretStore.swift */; };
 		28D7881C0CFAA71F88D8F779 /* SearchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D724C5BF70A0A1C5C46D0111 /* SearchViews.swift */; };
+		2AAC5A021A873C125210365B /* Octonaut-Pearl-Blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = BF332B6C9B23D7206BF523C6 /* Octonaut-Pearl-Blue.icon */; };
 		39751B6DDF3F1E06A5F76C22 /* Identifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18AD3CD2ACF4B2DE44C31C3D /* Identifiers.swift */; };
 		3CA2654134ADBBDFB0A076C0 /* AccountCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E8E512134F4BB0198430532 /* AccountCoordinator.swift */; };
 		3E5EB1E81D32870F4429D4C5 /* PersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA26AD5A1014E91707FDDDD7 /* PersistenceTests.swift */; };
@@ -45,9 +48,11 @@
 		5AF9A9DA6CA44EF5C8C48A78 /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EA472F0D0173FA4B790DED6 /* SettingsViews.swift */; };
 		5D77E4C6FD535113E09D857B /* DomainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6E2CF45C950F812138A6C37 /* DomainTests.swift */; };
 		5DAFAAE62934A4C5F2D48ABA /* RedditClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F976A5EAF9283EF732E4171 /* RedditClient.swift */; };
+		5DF495307A0A646A7A58ECFC /* Octonaut-Pearl-Blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = BF332B6C9B23D7206BF523C6 /* Octonaut-Pearl-Blue.icon */; };
 		651C8E18D3ADCC99D113ACC4 /* SwiftDataModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 573291A83CE53B9C67DE560C /* SwiftDataModels.swift */; };
 		6611D70DD8FFC7AD1BA81E0B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13C35C509F4DD5385D92BB6B /* Assets.xcassets */; };
 		68F5852A84603A0437DAE22E /* RedditSessionValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF65D3D48202B73A6543DEA3 /* RedditSessionValidator.swift */; };
+		690F904C0D7D99A5F0C16F30 /* AppIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6FF5AE59ACB2883B417609 /* AppIconPicker.swift */; };
 		6B0EF7AF782C5B899A120A67 /* CredentialVaultAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65FFA69A452BC8037ACCF243 /* CredentialVaultAdapter.swift */; };
 		6B9DD18753A900E581FE2667 /* HelpIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8ED835BC73E3299A2804C5E /* HelpIndex.swift */; };
 		6CC05646538DA6D2A6C5ACCC /* NOTES.md in Resources */ = {isa = PBXBuildFile; fileRef = B97B8C2326D533E9D1C7B982 /* NOTES.md */; };
@@ -84,9 +89,11 @@
 		B928A87382A758EF3E7D7360 /* Fixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AF089A4CCA8AC63AE0A66A1 /* Fixtures.swift */; };
 		BD51694C0DF1A85ACBBEF508 /* ServiceContracts.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA6372E1E5B21136128D9A74 /* ServiceContracts.swift */; };
 		BF1C2786A748926187B88613 /* OctonautMediaComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECC0450C9C3B6FFD48B55D2 /* OctonautMediaComponents.swift */; };
+		C76E1D04AAA2E11F30A99519 /* AppIconPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6FF5AE59ACB2883B417609 /* AppIconPicker.swift */; };
 		CB3900206EF8532592D694A6 /* RedditJSONCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A76A0D2A830F71882833217 /* RedditJSONCodec.swift */; };
 		CC57C45AE2C8DC3FA229FEAE /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85EF8FE6589B257568A4AE85 /* SettingsStore.swift */; };
 		D45DA5ECD551FE33012A820B /* FeatureModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E07930B4DE408F45C34596E /* FeatureModels.swift */; };
+		D6CAC5784A44C3D3283B1DD5 /* Octonaut-Frosted-Pink.icon in Resources */ = {isa = PBXBuildFile; fileRef = 19664B0ED28F51BB0516657E /* Octonaut-Frosted-Pink.icon */; };
 		DACE25CCE5F9F25C4A295722 /* NavigationAndSorting.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2B1D6224201C90D8836878A /* NavigationAndSorting.swift */; };
 		DB22BCFCA644B3EA803C78C1 /* AppleIntelligenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131C7D7D8C76F8FE9AE80BCB /* AppleIntelligenceService.swift */; };
 		DD0B990C965429A0DF081724 /* NavigationAndSorting.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2B1D6224201C90D8836878A /* NavigationAndSorting.swift */; };
@@ -100,6 +107,7 @@
 		F4399200862A12F99747851E /* ComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 190933A8BDAB948EE2642069 /* ComposerView.swift */; };
 		F4C5BA1E8CC940A1766459BE /* RedditClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F976A5EAF9283EF732E4171 /* RedditClient.swift */; };
 		F5AF3B4C5EF838BBC11F21B1 /* RedditJSONCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A76A0D2A830F71882833217 /* RedditJSONCodec.swift */; };
+		F6C1A8B746B862599A941155 /* Octonaut-Pearl-Plush.icon in Resources */ = {isa = PBXBuildFile; fileRef = D52445C2A6F0D8879597C9BA /* Octonaut-Pearl-Plush.icon */; };
 		F728090C1100D317467CCB1F /* SwiftDataModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 573291A83CE53B9C67DE560C /* SwiftDataModels.swift */; };
 		F8484E72D969168A9C3DE685 /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E175DD18B0D8FAB91E72D58E /* MacSettingsView.swift */; };
 		F879EBCE6CA03B730726CB60 /* GalleryPagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18B6510ED91F17F1779EBB29 /* GalleryPagerView.swift */; };
@@ -129,6 +137,8 @@
 		18AD3CD2ACF4B2DE44C31C3D /* Identifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Identifiers.swift; sourceTree = "<group>"; };
 		18B6510ED91F17F1779EBB29 /* GalleryPagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryPagerView.swift; sourceTree = "<group>"; };
 		190933A8BDAB948EE2642069 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
+		191C91B58FAB1A0F8030EEFB /* Octonaut.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Octonaut.entitlements; sourceTree = "<group>"; };
+		19664B0ED28F51BB0516657E /* Octonaut-Frosted-Pink.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = "Octonaut-Frosted-Pink.icon"; sourceTree = "<group>"; };
 		209966EFF7E9BC5B59414C6A /* ServiceStubs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceStubs.swift; sourceTree = "<group>"; };
 		224A0A9F5B043DBCDFCA9E38 /* AccountsAndDrafts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccountsAndDrafts.swift; sourceTree = "<group>"; };
 		244BEE5379F4811B0AADA993 /* OctonautMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = OctonautMac.entitlements; sourceTree = "<group>"; };
@@ -141,7 +151,7 @@
 		35748B9785F8F55A63306C74 /* SemanticFilterEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticFilterEngine.swift; sourceTree = "<group>"; };
 		391984C780F7CF0F2A6F0535 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		3E07930B4DE408F45C34596E /* FeatureModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureModels.swift; sourceTree = "<group>"; };
-		4DD643A89061C969F106E42D /* OctonautMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; name = OctonautMac.app; path = Octonaut.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4DD643A89061C969F106E42D /* OctonautMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OctonautMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4EA472F0D0173FA4B790DED6 /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
 		573291A83CE53B9C67DE560C /* SwiftDataModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftDataModels.swift; sourceTree = "<group>"; };
 		5E702C6ADAEE69BA35D8C9B9 /* OctonautImageCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctonautImageCache.swift; sourceTree = "<group>"; };
@@ -166,11 +176,13 @@
 		9AF089A4CCA8AC63AE0A66A1 /* Fixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Fixtures.swift; sourceTree = "<group>"; };
 		9C8D07C0486519FD2517A3F8 /* OctonautApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctonautApp.swift; sourceTree = "<group>"; };
 		9FCB290AAB8CBEEC89721872 /* MacSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacSearchView.swift; sourceTree = "<group>"; };
+		AD6FF5AE59ACB2883B417609 /* AppIconPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconPicker.swift; sourceTree = "<group>"; };
 		AFFF1958B3F1C9D16EF909B4 /* MacFeedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacFeedViews.swift; sourceTree = "<group>"; };
-		B1C4AFD94FC7C16AF85F27D9 /* Octonaut.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Octonaut.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B1C4AFD94FC7C16AF85F27D9 /* Octonaut.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Octonaut.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B97B8C2326D533E9D1C7B982 /* NOTES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = NOTES.md; sourceTree = "<group>"; };
 		B9D975AB98754EF4264D93DB /* AppDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDependencies.swift; sourceTree = "<group>"; };
 		BD910ECAEFEEC348BF2686C2 /* AVFoundationMediaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVFoundationMediaService.swift; sourceTree = "<group>"; };
+		BF332B6C9B23D7206BF523C6 /* Octonaut-Pearl-Blue.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = "Octonaut-Pearl-Blue.icon"; sourceTree = "<group>"; };
 		BF65D3D48202B73A6543DEA3 /* RedditSessionValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedditSessionValidator.swift; sourceTree = "<group>"; };
 		C6E2CF45C950F812138A6C37 /* DomainTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DomainTests.swift; sourceTree = "<group>"; };
 		C883878DD07372A87014F548 /* FixtureRedditClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FixtureRedditClient.swift; sourceTree = "<group>"; };
@@ -178,6 +190,7 @@
 		CFB6D38CF4072D375C6833A6 /* SemanticFilterSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticFilterSettingsView.swift; sourceTree = "<group>"; };
 		D11EB2C11B6D9252906D7B9C /* AppRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRouter.swift; sourceTree = "<group>"; };
 		D430638EEFFA69BEE5F13F7C /* SearchRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchRuntime.swift; sourceTree = "<group>"; };
+		D52445C2A6F0D8879597C9BA /* Octonaut-Pearl-Plush.icon */ = {isa = PBXFileReference; lastKnownFileType = wrapper.icon; path = "Octonaut-Pearl-Plush.icon"; sourceTree = "<group>"; };
 		D724C5BF70A0A1C5C46D0111 /* SearchViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViews.swift; sourceTree = "<group>"; };
 		D8ED835BC73E3299A2804C5E /* HelpIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelpIndex.swift; sourceTree = "<group>"; };
 		D9C3584BE0308BF8A528138A /* RedditMarkdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedditMarkdown.swift; sourceTree = "<group>"; };
@@ -226,6 +239,14 @@
 			path = Intelligence;
 			sourceTree = "<group>";
 		};
+		36852F924F100667BB0FD4A0 /* Design */ = {
+			isa = PBXGroup;
+			children = (
+				C4C5F9B9D7D5E8B057EC2B01 /* AppIcons */,
+			);
+			path = Design;
+			sourceTree = "<group>";
+		};
 		3876F3EA09E3FF8EC061B734 /* Media */ = {
 			isa = PBXGroup;
 			children = (
@@ -237,6 +258,7 @@
 		3BBBAE6703DA6ACE1F944E40 /* Persistence */ = {
 			isa = PBXGroup;
 			children = (
+				AD6FF5AE59ACB2883B417609 /* AppIconPicker.swift */,
 				67648004928F4AA64F0C2BE2 /* KeychainSecretStore.swift */,
 				E197B12F6EDFDEE62B8C4D30 /* PersistenceStore.swift */,
 				85EF8FE6589B257568A4AE85 /* SettingsStore.swift */,
@@ -353,6 +375,7 @@
 		9103F2F57CA8B31D17EBAC19 = {
 			isa = PBXGroup;
 			children = (
+				36852F924F100667BB0FD4A0 /* Design */,
 				BED1C9957C6F9B4C436AE0EF /* OctonautApp */,
 				FE408BE46EB8CF1BC4BD7F2B /* OctonautMac */,
 				F4E9C35789118D8E20F6FF3F /* OctonautTests */,
@@ -423,6 +446,7 @@
 				171FBE5341D6D16845A7E315 /* Services */,
 				13C35C509F4DD5385D92BB6B /* Assets.xcassets */,
 				391984C780F7CF0F2A6F0535 /* Info.plist */,
+				191C91B58FAB1A0F8030EEFB /* Octonaut.entitlements */,
 			);
 			path = OctonautApp;
 			sourceTree = "<group>";
@@ -433,6 +457,16 @@
 				6C47C731DABDE858CD85DCD0 /* PostDetailViews.swift */,
 			);
 			path = PostDetail;
+			sourceTree = "<group>";
+		};
+		C4C5F9B9D7D5E8B057EC2B01 /* AppIcons */ = {
+			isa = PBXGroup;
+			children = (
+				19664B0ED28F51BB0516657E /* Octonaut-Frosted-Pink.icon */,
+				BF332B6C9B23D7206BF523C6 /* Octonaut-Pearl-Blue.icon */,
+				D52445C2A6F0D8879597C9BA /* Octonaut-Pearl-Plush.icon */,
+			);
+			path = AppIcons;
 			sourceTree = "<group>";
 		};
 		CEF512F6FDD4CD5EFCD27B09 /* Gallery */ = {
@@ -578,8 +612,8 @@
 			projectRoot = "";
 			targets = (
 				6813939EEF5681F07F2FC42B /* Octonaut */,
-				1624150B7D18E1D612B6A231 /* OctonautMac */,
 				F97C7515901FE7DFD17E4021 /* OctonautTests */,
+				1624150B7D18E1D612B6A231 /* OctonautMac */,
 			);
 		};
 /* End PBXProject section */
@@ -591,6 +625,9 @@
 			files = (
 				6611D70DD8FFC7AD1BA81E0B /* Assets.xcassets in Resources */,
 				6CC05646538DA6D2A6C5ACCC /* NOTES.md in Resources */,
+				D6CAC5784A44C3D3283B1DD5 /* Octonaut-Frosted-Pink.icon in Resources */,
+				2AAC5A021A873C125210365B /* Octonaut-Pearl-Blue.icon in Resources */,
+				0329177044D310FCBCA2D05D /* Octonaut-Pearl-Plush.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -599,6 +636,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				18BB48FF9DD0BEE05FE621E5 /* Assets.xcassets in Resources */,
+				0F3E83CDEF16B0DF8CE075C7 /* Octonaut-Frosted-Pink.icon in Resources */,
+				5DF495307A0A646A7A58ECFC /* Octonaut-Pearl-Blue.icon in Resources */,
+				F6C1A8B746B862599A941155 /* Octonaut-Pearl-Plush.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -615,6 +655,7 @@
 				1094829821DCA93F9ADFF9C9 /* AccountViews.swift in Sources */,
 				1CD99A3B9BF6AB17F81B9B36 /* AccountsAndDrafts.swift in Sources */,
 				EC6F869F6D61ACC31CAA9CF3 /* AppDependencies.swift in Sources */,
+				C76E1D04AAA2E11F30A99519 /* AppIconPicker.swift in Sources */,
 				8C808CE82834B7D368AB523C /* AppRootView.swift in Sources */,
 				4A0BEE640D7F7F1924EED880 /* AppRouter.swift in Sources */,
 				DB22BCFCA644B3EA803C78C1 /* AppleIntelligenceService.swift in Sources */,
@@ -673,6 +714,7 @@
 				9AC0CA6179F48600E3A25EA3 /* AccountCredentialVault.swift in Sources */,
 				1A23B3984624C807F422AEF3 /* AccountsAndDrafts.swift in Sources */,
 				77E839BA916AABE238082EF4 /* AppDependencies.swift in Sources */,
+				690F904C0D7D99A5F0C16F30 /* AppIconPicker.swift in Sources */,
 				B7B3FDAB2F4F47BD0084EF37 /* AppRouter.swift in Sources */,
 				B52F0CD12EA513248D8C7DB2 /* AppleIntelligenceService.swift in Sources */,
 				4DDE5343DEF5535A037D2753 /* AuthenticatedRedditService.swift in Sources */,
@@ -737,14 +779,15 @@
 		3C4630828AED1703AFF08787 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "Octonaut-Pearl-Blue Octonaut-Pearl-Plush Octonaut-Frosted-Pink";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OctonautApp/Octonaut.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OctonautApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Octonaut;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.news";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -933,14 +976,15 @@
 		ECEF38AEAA2C8A128AF86EEC /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "Octonaut-Pearl-Blue Octonaut-Pearl-Plush Octonaut-Frosted-Pink";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = OctonautApp/Octonaut.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = OctonautApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Octonaut;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.news";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";

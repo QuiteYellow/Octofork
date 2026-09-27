@@ -56,6 +56,42 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
     var galleryURLs: [URL]
     var audioURL: URL?
 
+#if DEBUG
+    static let screenshotCat = PostCardModel(
+        id: "t3_screenshot-cat", community: "aww", author: "sunny_window",
+        title: "Found the warmest spot in the house",
+        body: "", score: 2_418, comments: 126, age: "2h", vote: 0,
+        isSaved: false, isSeen: false, isNSFW: false, isSpoiler: false,
+        isSticky: false, isVideo: false, hasMedia: true, mediaTitle: "Image",
+        shareURL: URL(string: "https://www.reddit.com/r/aww/comments/screenshotcat")!,
+        mediaURL: URL(string: "octonaut-screenshot://cat")!,
+        mediaKind: "image"
+    )
+
+    static let screenshotCoast = PostCardModel(
+        id: "t3_screenshot-coast", community: "photography", author: "trailwalker",
+        title: "A quiet walk above the coast",
+        body: "", score: 1_306, comments: 84, age: "4h", vote: 0,
+        isSaved: true, isSeen: false, isNSFW: false, isSpoiler: false,
+        isSticky: false, isVideo: false, hasMedia: true, mediaTitle: "Image",
+        shareURL: URL(string: "https://www.reddit.com/r/photography/comments/screenshotcoast")!,
+        mediaURL: URL(string: "octonaut-screenshot://coast")!,
+        mediaKind: "image"
+    )
+
+    static let screenshotGallery = PostCardModel(
+        id: "t3_screenshot-gallery", community: "photography", author: "trailwalker",
+        title: "A sunny afternoon, two favourite views",
+        body: "", score: 1_306, comments: 84, age: "4h", vote: 0,
+        isSaved: false, isSeen: false, isNSFW: false, isSpoiler: false,
+        isSticky: false, isVideo: false, hasMedia: true, mediaTitle: "Gallery",
+        shareURL: URL(string: "https://www.reddit.com/r/photography/comments/screenshotgallery")!,
+        mediaURL: URL(string: "octonaut-screenshot://coast")!,
+        mediaKind: "gallery",
+        galleryURLs: [URL(string: "octonaut-screenshot://coast")!, URL(string: "octonaut-screenshot://cat")!]
+    )
+#endif
+
     var isSensitive: Bool { isNSFW || isSpoiler }
     var fullname: String { IDNormalization.fullname(id, kind: "t3") }
     var prefersMediaFirstPresentation: Bool {
@@ -805,6 +841,7 @@ enum FeatureSheet: Identifiable, Hashable {
 @MainActor
 @Observable
 final class OctonautFeatureStore {
+    private let screenshotMode: Bool
     private struct FeedCacheEntry {
         let posts: [PostCardModel]
         let filteredPostCount: Int
@@ -913,8 +950,10 @@ final class OctonautFeatureStore {
         accountID: AccountID? = nil,
         intelligence: (any IntelligenceService)? = nil,
         settings: SettingsStore? = nil,
-        persistence: (any PersistenceStore)? = nil
+        persistence: (any PersistenceStore)? = nil,
+        screenshotMode: Bool = false
     ) {
+        self.screenshotMode = screenshotMode
         self.reddit = reddit
         self.authenticated = authenticated
         self.accountID = accountID
@@ -946,12 +985,32 @@ final class OctonautFeatureStore {
             }
             self.accountID = accountID ?? domainAccounts.first?.id
         }
+        if screenshotMode {
+#if DEBUG
+            posts = [.screenshotCat, .screenshotCoast, .sample]
+            comments = [
+                CommentCardModel(
+                    id: "t1_coast-1", author: "morning_light",
+                    body: "The colours are lovely. That path looks peaceful.",
+                    score: 284, age: "1h", vote: 1, depth: 0, isModerator: false,
+                    isCollapsed: false, children: []
+                ),
+                CommentCardModel(
+                    id: "t1_coast-2", author: "sea_air",
+                    body: "I would happily spend an afternoon walking there.",
+                    score: 96, age: "48m", vote: 0, depth: 0, isModerator: false,
+                    isCollapsed: false, children: []
+                )
+            ]
+#endif
+        }
     }
 
     /// Keeps the feature store aligned with the account coordinator. The
     /// coordinator remains the source of truth; this value binds feed reads
     /// to the selected session and lets stale responses be discarded.
     func synchronizeAccount(id: AccountID?, generation: UInt, accounts domainAccounts: [Account]) {
+        if screenshotMode { return }
         let selectionChanged = accountID != id || accountGeneration != generation
         accountID = id
         accountGeneration = generation
@@ -1004,6 +1063,7 @@ final class OctonautFeatureStore {
     }
 
     func refreshPosts(for descriptor: FeedDescriptorModel = .popular, forceRefresh: Bool = false) async {
+        if screenshotMode { return }
         let requestID = UUID()
         feedRequestID = requestID
         let filterRevision = Int(settings?.filterRevision ?? 0)
@@ -1075,6 +1135,7 @@ final class OctonautFeatureStore {
     }
 
     func refreshCommunities(forceRefresh: Bool = false) async {
+        if screenshotMode { return }
         if !forceRefresh, let communitiesRefreshTask {
             await communitiesRefreshTask.value
             return
@@ -1296,6 +1357,11 @@ final class OctonautFeatureStore {
         sort: String = "Best",
         preservingVisibleComments: Bool = false
     ) async -> Bool {
+        if screenshotMode {
+            detailPost = post
+            detailState = .loaded
+            return true
+        }
         let requestID = UUID()
         detailRequestID = requestID
         if !preservingVisibleComments {
@@ -1449,6 +1515,7 @@ final class OctonautFeatureStore {
     @ObservationIgnored private var isLoadingNextPage = false
 
     func loadMorePosts(for descriptor: FeedDescriptorModel = .popular) async {
+        if screenshotMode { return }
         guard feedState == .loaded || feedState == .empty, !isLoadingNextPage else { return }
         let requestID = feedRequestID
         isLoadingNextPage = true

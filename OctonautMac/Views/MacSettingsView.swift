@@ -23,6 +23,7 @@ struct MacSettingsView: View {
             .tabItem { Label("General", systemImage: "gearshape") }
 
             Form {
+                AppIconPicker()
                 Toggle("Blur spoilers", isOn: $settings.blurSpoilers)
                 Toggle("Blur NSFW media", isOn: $settings.blurNSFWMedia)
                 Toggle("Use pure black background", isOn: $settings.pureBlackBackground)

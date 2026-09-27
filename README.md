@@ -2,11 +2,15 @@
 
 ![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)
 
-Octonaut is a native SwiftUI Reddit client for iPhone, iPad, and Mac. The underlying data access architecture is derived from [https://github.com/dmilin1/hydra/](https://github.com/dmilin1/hydra/).
+Octonaut is a native SwiftUI Reddit client for iPhone, iPad, and Mac. The underlying data access architecture is inspired by [https://github.com/dmilin1/hydra/](https://github.com/dmilin1/hydra/).
 
 Just want to try it on iPhone? [TestFlight](https://testflight.apple.com/join/kRJfvUE6)
 
 ## ✨ Features
+
+
+- iPhone Duo support!
+- Multireddit/Custom feeds - create a feed of subreddits from amongst your subscribed reddits, or add subreddits which you aren't subscribed to.
 
 - Browse public Reddit feeds without an account, or sign in through Reddit's website.
 - Switch between multiple Reddit accounts.
@@ -82,13 +86,15 @@ xcrun simctl list devices available
 
 ## 🔐 Privacy
 
+See [Octonaut Privacy Policy](./PRIVACY.md).
+
 Octonaut does not record or send any telemetry.
 
 By default, post and comment summaries are generated on device (or disabled if your device doesn't support Apple Intelligence). If you choose an OpenAI-compatible summary provider, its API key is also stored in Keychain and the selected post or comment text is sent to that provider.
 
 ## 📄 License
 
-Like the Hydra project that this app is derived from, Octonaut is also available under the [GNU Affero General Public License v3.0](./LICENSE.txt).
+Octonaut is available under the [GNU Affero General Public License v3.0](./LICENSE.txt).
 
 ## Custom feed sync
 

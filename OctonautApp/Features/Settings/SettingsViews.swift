@@ -156,6 +156,7 @@ struct SettingsDetailView: View {
 
     private var appearance: some View {
         Group {
+            AppIconPicker()
             Section("Reading") {
                 Picker("Feed layout", selection: Binding(get: { dependencies.settings.feedLayout }, set: { dependencies.settings.feedLayout = $0 })) { Text("Media cards").tag(FeedLayout.full); Text("Compact rows").tag(FeedLayout.compact) }
                 Picker("Thumbnail side", selection: Binding(get: { dependencies.settings.compactThumbnailSide }, set: { dependencies.settings.compactThumbnailSide = $0 })) { Text("Left").tag(CompactThumbnailSide.left); Text("Right").tag(CompactThumbnailSide.right) }

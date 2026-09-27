@@ -28,9 +28,20 @@ targets:
     platform: iOS
     sources:
       - path: OctonautApp
+      - path: Design/AppIcons/Octonaut-Pearl-Blue.icon
+        type: file
+        buildPhase: resources
+      - path: Design/AppIcons/Octonaut-Pearl-Plush.icon
+        type: file
+        buildPhase: resources
+      - path: Design/AppIcons/Octonaut-Frosted-Pink.icon
+        type: file
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.leddytech.octonaut
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: "Octonaut-Pearl-Blue Octonaut-Pearl-Plush Octonaut-Frosted-Pink"
         CODE_SIGN_ENTITLEMENTS: OctonautApp/Octonaut.entitlements
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Octonaut
@@ -82,10 +93,20 @@ targets:
       - path: OctonautApp/Features/Search/SearchRuntime.swift
       - path: OctonautMac
       - path: OctonautApp/Assets.xcassets
+      - path: Design/AppIcons/Octonaut-Pearl-Blue.icon
+        type: file
+        buildPhase: resources
+      - path: Design/AppIcons/Octonaut-Pearl-Plush.icon
+        type: file
+        buildPhase: resources
+      - path: Design/AppIcons/Octonaut-Frosted-Pink.icon
+        type: file
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.leddytech.octonaut
         PRODUCT_NAME: Octonaut
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Octonaut
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.news

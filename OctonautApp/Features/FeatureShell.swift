@@ -80,18 +80,34 @@ struct OctonautTabsView: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var selectedTab: AppTab = .posts
-    @State private var postsRouter = OctonautFeatureRouter(path: [.feed(.home)])
+    @State private var selectedTab: AppTab
+    @State private var postsRouter: OctonautFeatureRouter
     @State private var inboxRouter = OctonautFeatureRouter()
     @State private var accountRouter = OctonautFeatureRouter()
     @State private var searchRouter = OctonautFeatureRouter()
-    @State private var settingsRouter = OctonautFeatureRouter()
+    @State private var settingsRouter: OctonautFeatureRouter
     @State private var postsSplitState = PostsSplitState()
     @State private var store: OctonautFeatureStore
 
     init(store: OctonautFeatureStore = .preview, reddit: (any RedditClient)? = nil) {
         _store = State(initialValue: store)
         self.reddit = reddit
+#if DEBUG
+        let screenshot = ProcessInfo.processInfo.environment["OCTONAUT_SCREENSHOT"]
+        _selectedTab = State(initialValue: ["settings", "theme"].contains(screenshot) ? .settings : .posts)
+        let path: [FeatureRoute]
+        switch screenshot {
+        case "feeds": path = []
+        case "detail": path = [.feed(.home), .post(.screenshotCoast)]
+        default: path = [.feed(.home)]
+        }
+        _postsRouter = State(initialValue: OctonautFeatureRouter(path: path))
+        _settingsRouter = State(initialValue: OctonautFeatureRouter(path: screenshot == "theme" ? [.settings(.theme)] : []))
+#else
+        _selectedTab = State(initialValue: .posts)
+        _postsRouter = State(initialValue: OctonautFeatureRouter(path: [.feed(.home)]))
+        _settingsRouter = State(initialValue: OctonautFeatureRouter())
+#endif
     }
 
     var body: some View {

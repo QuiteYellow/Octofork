@@ -14,12 +14,32 @@ private struct OctonautExportableMedia: Identifiable {
 
 private struct OctonautFileExporter: UIViewControllerRepresentable {
     let fileURL: URL
+    let onSaved: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSaved: onSaved)
+    }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        UIDocumentPickerViewController(forExporting: [fileURL], asCopy: true)
+        let picker = UIDocumentPickerViewController(forExporting: [fileURL], asCopy: true)
+        picker.delegate = context.coordinator
+        return picker
     }
 
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onSaved: () -> Void
+
+        init(onSaved: @escaping () -> Void) {
+            self.onSaved = onSaved
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard !urls.isEmpty else { return }
+            onSaved()
+        }
+    }
 }
 
 private actor OctonautMediaSaveCoordinator {
@@ -1016,11 +1036,28 @@ struct OctonautMediaViewer: View {
                                     Label("Save to Files", systemImage: "folder.badge.plus")
                                 }
                             } label: {
-                                Image(systemName: isSaving ? "arrow.down.circle.dotted" : "arrow.down.circle")
+                                Image(systemName: "arrow.down.circle")
                                     .font(.title3)
                             }
                             .disabled(isSaving)
-                            .accessibilityLabel(isSaving ? "Saving media" : "Save media")
+                            .opacity(isSaving || saveConfirmation != nil ? 0 : 1)
+                            .overlay {
+                                // Keep live feedback outside the native menu's label.
+                                Group {
+                                    if isSaving {
+                                        ProgressView()
+                                            .tint(.white)
+                                    } else if saveConfirmation != nil {
+                                        Image(systemName: "checkmark.circle")
+                                            .font(.title3)
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                            }
+                            .accessibilityLabel("Save media")
+                            .accessibilityValue(isSaving ? "Saving media" : saveConfirmation ?? "")
                         }
                         Menu {
                             if let onSave {
@@ -1080,20 +1117,23 @@ struct OctonautMediaViewer: View {
         .simultaneousGesture(dismissalGesture, isEnabled: !isZoomed && !isDismissing)
         .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showOverlay.toggle() } }
         .onChange(of: page) { _, _ in isZoomed = false }
+        .onChange(of: saveConfirmation) { _, confirmation in
+            if confirmation != nil {
+                showOverlay = true
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            }
+        }
         .statusBarHidden(!showOverlay)
         .presentationBackground(.clear)
         .sheet(item: $fileToExport) { media in
-            OctonautFileExporter(fileURL: media.url)
+            OctonautFileExporter(fileURL: media.url) {
+                saveConfirmation = "The media was saved to Files."
+            }
         }
         .alert("Could not save media", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
             Button("OK", role: .cancel) { saveError = nil }
         } message: {
             Text(saveError ?? "The media could not be saved.")
-        }
-        .alert("Saved", isPresented: Binding(get: { saveConfirmation != nil }, set: { if !$0 { saveConfirmation = nil } })) {
-            Button("OK", role: .cancel) { saveConfirmation = nil }
-        } message: {
-            Text(saveConfirmation ?? "The media was saved.")
         }
     }
 
@@ -1158,6 +1198,9 @@ struct OctonautMediaViewer: View {
     private func saveMedia(_ sourceURL: URL, destination: SaveDestination) {
         guard !isSaving else { return }
         isSaving = true
+        saveConfirmation = nil
+        saveError = nil
+        showOverlay = true
         Task {
             defer { isSaving = false }
             do {
@@ -1182,6 +1225,9 @@ struct OctonautMediaViewer: View {
     private func saveAllMediaToPhotos() {
         guard !isSaving, mediaURLs.count > 1 else { return }
         isSaving = true
+        saveConfirmation = nil
+        saveError = nil
+        showOverlay = true
         Task {
             defer { isSaving = false }
             do {
