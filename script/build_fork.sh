@@ -8,6 +8,7 @@
 #
 # Usage:
 #   script/build_fork.sh                 build and install to a connected iPhone
+#   script/build_fork.sh --release       same, optimised (no debug-only UI)
 #   script/build_fork.sh --simulator     build and run on a booted simulator
 #   script/build_fork.sh --generate      regenerate the Xcode project only
 #   script/build_fork.sh --archive       export a signed .ipa into build/
@@ -27,13 +28,19 @@ command -v xcodegen >/dev/null || die "xcodegen not installed. Run: brew install
 # off OCTOFORK_PROJECT_NAME, so two variants never share a generated project
 # or Info.plist.
 ENV_FILE="${OCTOFORK_ENV:-.env}"
-while [[ "${1:-}" == --env || "${1:-}" == --env=* ]]; do
-    if [[ "$1" == --env=* ]]; then
-        ENV_FILE="${1#--env=}"; shift
-    else
-        [[ -n "${2:-}" ]] || die "--env needs a file"
-        ENV_FILE="$2"; shift 2
-    fi
+# Release turns on -O and compiles out everything behind #if DEBUG, including
+# the mux warning badge. It is the honest configuration for judging scroll
+# performance; Debug is the one that tells you why audio failed.
+CONFIGURATION="Debug"
+while [[ "${1:-}" == --env || "${1:-}" == --env=* || "${1:-}" == --release || "${1:-}" == --debug ]]; do
+    case "$1" in
+        --env=*) ENV_FILE="${1#--env=}"; shift ;;
+        --env)
+            [[ -n "${2:-}" ]] || die "--env needs a file"
+            ENV_FILE="$2"; shift 2 ;;
+        --release) CONFIGURATION="Release"; shift ;;
+        --debug) CONFIGURATION="Debug"; shift ;;
+    esac
 done
 
 [[ -f "$ENV_FILE" ]] || die "$ENV_FILE not found. Run: cp .env.example $ENV_FILE  (then fill it in)"
@@ -96,9 +103,10 @@ case "${1:---device}" in
         [[ -n "$local_sim" ]] || die "no booted simulator. Boot one from Xcode or: xcrun simctl boot 'iPhone 17'"
         info "Building for simulator $local_sim"
         xcodebuild build -project "$PROJECT" -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
             -destination "id=$local_sim" -quiet
         app="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination "id=$local_sim" \
-            -showBuildSettings 2>/dev/null \
+            -configuration "$CONFIGURATION" -showBuildSettings 2>/dev/null \
             | awk -F' = ' '/ CODESIGNING_FOLDER_PATH = /{print $2; exit}')"
         xcrun simctl install "$local_sim" "$app"
         xcrun simctl launch "$local_sim" "$OCTOFORK_BUNDLE_ID"
@@ -136,14 +144,15 @@ PLIST
         generate
         udid="$(device_udid)" || die "could not select a device (see above)"
         [[ -n "$udid" ]] || die "could not determine device UDID"
-        info "Building for device $udid"
+        info "Building for device $udid ($CONFIGURATION)"
         # -allowProvisioningUpdates lets Xcode register the device, create the
         # App ID and mint the iCloud container on first run.
         xcodebuild build -project "$PROJECT" -scheme "$SCHEME" \
+            -configuration "$CONFIGURATION" \
             -destination "id=$udid" \
             -allowProvisioningUpdates -quiet
         app="$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination "id=$udid" \
-            -showBuildSettings 2>/dev/null \
+            -configuration "$CONFIGURATION" -showBuildSettings 2>/dev/null \
             | awk -F' = ' '/ CODESIGNING_FOLDER_PATH = /{print $2; exit}')"
         [[ -d "$app" ]] || die "could not locate built .app"
         info "Installing $app"
