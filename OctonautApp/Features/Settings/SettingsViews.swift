@@ -133,6 +133,9 @@ struct SettingsDetailView: View {
                 Picker("Default post sort", selection: Binding(get: { dependencies.settings.defaultPostSort }, set: { dependencies.settings.defaultPostSort = $0 })) {
                     ForEach(["default", "best", "hot", "new", "top", "rising", "controversial"], id: \.self) { value in Text(value.capitalized).tag(PostSort(rawValue: value)) }
                 }
+                Picker("Default top time", selection: Binding(get: { dependencies.settings.defaultTopTime }, set: { dependencies.settings.defaultTopTime = $0 })) {
+                    ForEach(TopTime.allCases, id: \.self) { value in Text(value.title).tag(value) }
+                }
                 Picker("Default comment sort", selection: Binding(get: { dependencies.settings.defaultCommentSort }, set: { dependencies.settings.defaultCommentSort = $0 })) {
                     ForEach(["best", "new", "top", "controversial", "old", "qa"], id: \.self) { value in Text(value == "qa" ? "Q&A" : value.capitalized).tag(CommentSort(rawValue: value)) }
                 }

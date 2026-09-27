@@ -427,28 +427,73 @@ struct FeedView: View {
         OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass)
     }
 
+    /// The sorts this route offers. Reddit has no Best listing for a combined
+    /// feed, so it is left out rather than silently redirected to Hot.
+    private var availableSorts: [PostSort] {
+        descriptor.kind == .custom
+            ? PostSort.selectable.filter { $0 != .best }
+            : PostSort.selectable
+    }
+
+    private var activeSort: PostSort { store.effectiveSort(for: descriptor) }
+
+    private var sortSummary: String {
+        guard activeSort.acceptsTopTime else { return activeSort.title }
+        return "\(activeSort.title) · \(store.selectedTopTime.title)"
+    }
+
     private var sortMenu: some View {
         Menu {
-            ForEach(["Best", "Hot", "New", "Top", "Rising", "Controversial"], id: \.self) { sort in
-                Button {
-                    store.selectedSort = sort
-                    Task { await store.refreshPosts(for: descriptor, forceRefresh: true) }
-                } label: {
-                    if store.selectedSort == sort {
-                        Label(sort, systemImage: "checkmark")
-                    } else {
-                        Text(sort)
+            ForEach(availableSorts, id: \.rawValue) { sort in
+                if sort.acceptsTopTime {
+                    Menu {
+                        ForEach(TopTime.allCases, id: \.self) { time in
+                            Button {
+                                apply(sort: sort, topTime: time)
+                            } label: {
+                                sortLabel(
+                                    time.title,
+                                    isSelected: activeSort == sort && store.selectedTopTime == time
+                                )
+                            }
+                        }
+                    } label: {
+                        sortLabel(sort.title, isSelected: activeSort == sort)
+                    }
+                } else {
+                    Button {
+                        apply(sort: sort)
+                    } label: {
+                        sortLabel(sort.title, isSelected: activeSort == sort)
                     }
                 }
             }
         } label: {
-            HStack(spacing: 5) {
-                Text(descriptor.name)
-                Image(systemName: "chevron.down")
+            VStack(spacing: 0) {
+                HStack(spacing: 5) {
+                    Text(descriptor.name)
+                    Image(systemName: "chevron.down")
+                }
+                .font(.headline)
+                Text(sortSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .font(.headline)
         }
-        .accessibilityLabel("Sort \(store.selectedSort)")
+        .accessibilityLabel("Sort, \(sortSummary)")
+    }
+
+    @ViewBuilder
+    private func sortLabel(_ title: String, isSelected: Bool) -> some View {
+        if isSelected {
+            Label(title, systemImage: "checkmark")
+        } else {
+            Text(title)
+        }
+    }
+
+    private func apply(sort: PostSort, topTime: TopTime? = nil) {
+        Task { await store.applySort(sort, topTime: topTime, for: descriptor) }
     }
 
     private var displayMenu: some View {

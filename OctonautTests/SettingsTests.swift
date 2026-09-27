@@ -433,6 +433,83 @@ final class SettingsTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "unknown.future.setting"))
     }
 
+    // MARK: - Top time range
+
+    func testTopSortCarriesATimeRangeAndOtherSortsDoNot() async throws {
+        let client = FixtureRedditClient(listingData: Data(#"{"data":{"children":[],"after":null}}"#.utf8))
+        let store = OctonautFeatureStore(reddit: client)
+
+        await store.applySort(.top, topTime: .week, for: .home)
+        var captured = await client.lastListingRequest
+        var request = try XCTUnwrap(captured)
+        XCTAssertEqual(request.feed.sort, .top)
+        XCTAssertEqual(request.feed.topTime, .week)
+
+        await store.applySort(.new, for: .home)
+        captured = await client.lastListingRequest
+        request = try XCTUnwrap(captured)
+        XCTAssertEqual(request.feed.sort, .new)
+        XCTAssertNil(request.feed.topTime)
+    }
+
+    func testChangingSortRereadsTheFeedAndReturningToOneReusesItsCache() async throws {
+        let client = FixtureRedditClient(listingData: Data(#"{"data":{"children":[{"kind":"t3","data":{"id":"one","name":"t3_one","title":"A post","subreddit":"swift","permalink":"/r/swift/comments/one/title/","author":"reader"}}],"after":null}}"#.utf8))
+        let store = OctonautFeatureStore(reddit: client)
+
+        await store.refreshPosts(for: .home)
+        var requests = await client.listingRequests()
+        XCTAssertEqual(requests, 1)
+
+        // A new sort is a different listing, so the cached rows must not answer it.
+        await store.applySort(.top, topTime: .day, for: .home)
+        requests = await client.listingRequests()
+        XCTAssertEqual(requests, 2)
+
+        // A different time range on the same sort is also a different listing.
+        await store.applySort(.top, topTime: .year, for: .home)
+        requests = await client.listingRequests()
+        XCTAssertEqual(requests, 3)
+
+        // Returning to a sort read moments ago is served from the cache.
+        await store.applySort(.top, topTime: .day, for: .home)
+        requests = await client.listingRequests()
+        XCTAssertEqual(requests, 3)
+        XCTAssertEqual(store.posts.map(\.id), ["one"])
+    }
+
+    func testStoreStartsOnTheDefaultSortAndTopTimeFromSettings() async throws {
+        let defaults = UserDefaults(suiteName: "Sorting.\(UUID())")!
+        let settings = SettingsStore(defaults: defaults)
+        settings.defaultPostSort = .top
+        settings.defaultTopTime = .year
+        let client = FixtureRedditClient(listingData: Data(#"{"data":{"children":[],"after":null}}"#.utf8))
+        let store = OctonautFeatureStore(reddit: client, settings: settings)
+
+        XCTAssertEqual(store.selectedSort, .top)
+        XCTAssertEqual(store.selectedTopTime, .year)
+        await store.refreshPosts(for: .home)
+        let captured = await client.lastListingRequest
+        let request = try XCTUnwrap(captured)
+        XCTAssertEqual(request.feed.sort, .top)
+        XCTAssertEqual(request.feed.topTime, .year)
+    }
+
+    func testDefaultSortFallsBackToBestSoTheSortControlHasASelection() {
+        let defaults = UserDefaults(suiteName: "Sorting.Default.\(UUID())")!
+        let settings = SettingsStore(defaults: defaults)
+        XCTAssertEqual(settings.defaultPostSort, .default)
+        let store = OctonautFeatureStore(reddit: FixtureRedditClient(), settings: settings)
+        XCTAssertEqual(store.selectedSort, .best)
+    }
+
+    func testCombinedFeedReadsHotWhereRedditHasNoBestListing() {
+        let store = OctonautFeatureStore(reddit: FixtureRedditClient())
+        store.selectedSort = .best
+        let custom = CustomFeed(name: "Technology", communities: ["swift", "macos"]).descriptor
+        XCTAssertEqual(store.effectiveSort(for: custom), .hot)
+        XCTAssertEqual(store.effectiveSort(for: .home), .best)
+    }
+
     func testPreviewLineSettingsClampWithoutRecursing() {
         let defaults = UserDefaults(suiteName: "PreviewLines.\(UUID())")!
         let store = SettingsStore(defaults: defaults)

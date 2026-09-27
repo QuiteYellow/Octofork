@@ -140,7 +140,7 @@ actor URLSessionRedditClient: RedditClient {
             URLQueryItem(name: "limit", value: String(min(max(request.limit, 1), 100))),
             URLQueryItem(name: "sort", value: redditSort(request.feed.sort))
         ]
-        if let topTime = request.feed.topTime, request.feed.sort == .top || request.feed.sort == .controversial {
+        if let topTime = request.feed.topTime, request.feed.sort.acceptsTopTime {
             query.append(URLQueryItem(name: "t", value: topTime.rawValue))
         }
         appendPagination(after: request.after, before: request.before, to: &query)
