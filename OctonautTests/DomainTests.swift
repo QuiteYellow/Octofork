@@ -1415,27 +1415,63 @@ extension DomainTests {
         return settings
     }
 
-    /// A row leaving past the top has been read; one leaving past the bottom
-    /// because the reader scrolled back up has not.
+    /// Everything above the topmost visible row has been scrolled past.
+    /// Stated positionally the rule needs no state, so a missed visibility
+    /// event cannot strand a post the way the old index tracking did.
     @MainActor
-    func testRowVisibilityOnlyReportsRowsThatLeavePastTheTop() {
-        let visibility = FeedRowVisibility()
-        for index in 0...3 { visibility.rowAppeared(index) }
+    func testScrollReadRuleMarksEverythingAboveTheTopmostVisibleRow() {
+        var posts = (0..<6).map { index -> PostCardModel in
+            var post = PostCardModel.sample
+            post = PostCardModel(
+                id: "p\(index)", community: post.community, author: post.author,
+                authorFlair: post.authorFlair, title: post.title, body: post.body,
+                flair: post.flair, score: post.score, comments: post.comments,
+                age: post.age, vote: post.vote, isSaved: post.isSaved, isSeen: false,
+                isNSFW: post.isNSFW, isSpoiler: post.isSpoiler, isSticky: post.isSticky,
+                isVideo: post.isVideo, hasMedia: post.hasMedia, mediaTitle: post.mediaTitle,
+                shareURL: post.shareURL, mediaURL: post.mediaURL,
+                thumbnailURL: post.thumbnailURL, mediaKind: post.mediaKind,
+                galleryURLs: post.galleryURLs, audioURL: post.audioURL)
+            return post
+        }
 
-        // Scrolling down: row 0 goes off the top while 1...3 remain.
-        XCTAssertTrue(visibility.rowDisappeared(0))
+        // Nothing scrolled past yet: the first row is still on screen.
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: ["p0", "p1", "p2"], isScrolledFromTop: true), [])
 
-        // Scrolling back up: row 3 goes off the bottom, and everything still
-        // on screen sits above it.
-        XCTAssertFalse(visibility.rowDisappeared(3))
+        // Scrolled down to the third row, so the first two have been read.
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: ["p2", "p3", "p4"], isScrolledFromTop: true),
+            ["p0", "p1"])
 
-        // The last row on screen has nothing below it to compare against.
-        XCTAssertFalse(visibility.rowDisappeared(2))
-        XCTAssertFalse(visibility.rowDisappeared(1))
+        // Posts already seen are not re-reported.
+        posts[0].isSeen = true
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: ["p2", "p3"], isScrolledFromTop: true), ["p1"])
 
-        visibility.rowAppeared(7)
-        visibility.rowAppeared(9)
-        XCTAssertTrue(visibility.rowDisappeared(7))
+        // Scrolling back up marks nothing new.
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: ["p0", "p1"], isScrolledFromTop: true), [])
+
+        // A visible set that does not match the list -- the moment a feed
+        // swaps contents -- must not mark the whole list read.
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: ["other"], isScrolledFromTop: true), [])
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: [], isScrolledFromTop: true), [])
+
+        // Resting at the top nothing has been scrolled past, whatever the
+        // visible set claims. This is what discards the first-layout frame
+        // where the top row reports itself briefly not-visible.
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: ["p1", "p2"], isScrolledFromTop: false), [])
     }
 
     /// `setSeen` is a setter, not a flip. Marking a batch seen used to run

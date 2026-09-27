@@ -278,7 +278,7 @@ struct FeedView: View {
     @State private var crosspostPost: PostCardModel?
     @State private var pendingScrollPoints: CGFloat = 0
     @State private var mediaPreloader = OctonautFeedMediaPreloader()
-    @State private var rowVisibility = FeedRowVisibility()
+    @State private var scrollTracker = FeedScrollTracker()
 
     private let mediaPreloadDistance = 20
 
@@ -341,20 +341,18 @@ struct FeedView: View {
                             .listRowInsets(EdgeInsets())
                             .listRowSeparator(.hidden)
                             .id(post.id)
+                            // Viewport visibility, not cell lifecycle: this
+                            // fires for the screenful present at first render,
+                            // which `onAppear`/`onDisappear` pairs did not, and
+                            // is unaffected by the tab bar minimizing mid-scroll.
+                            // 0.6 is FUN-LIST-005's "60 percent of the row".
+                            .onScrollVisibilityChange(threshold: 0.6) { isVisible in
+                                scrollTracker.setVisibility(isVisible, id: post.id)
+                                markPostsScrolledPast()
+                            }
                             .onAppear {
                                 preloadMedia(after: index)
                                 if index >= visiblePosts.count - 2 { Task { await store.loadMorePosts(for: descriptor) } }
-                            }
-                            // Viewport visibility, not cell lifecycle.
-                            // `onAppear`/`onDisappear` fire on row recycling,
-                            // which the minimizing tab bar disturbs as it
-                            // changes the scroll view's insets mid-scroll.
-                            .onScrollVisibilityChange { isVisible in
-                                if isVisible {
-                                    rowVisibility.rowAppeared(index)
-                                } else {
-                                    markSeenIfScrolledPast(post, at: index)
-                                }
                             }
                         }
                         if store.feedState == .loading, !visiblePosts.isEmpty {
@@ -374,6 +372,7 @@ struct FeedView: View {
                     .onScrollGeometryChange(for: CGFloat.self) { geometry in
                         geometry.contentOffset.y + geometry.contentInsets.top
                     } action: { oldOffset, newOffset in
+                        scrollTracker.updateOffset(fromTop: newOffset)
                         pendingScrollPoints += abs(newOffset - oldOffset)
                         guard pendingScrollPoints >= 100 else { return }
                         let points = Int(pendingScrollPoints.rounded())
@@ -408,7 +407,7 @@ struct FeedView: View {
             }
         }
         .task(id: FeedLoadIdentity(descriptor: descriptor, account: store.accountContextKey)) {
-            rowVisibility.reset()
+            scrollTracker.reset()
             await store.refreshPosts(for: descriptor)
         }
         .task(id: visiblePosts.map(\.id)) {
@@ -582,12 +581,17 @@ struct FeedView: View {
         }
     }
 
-    /// Marks a post seen once it has scrolled off the top, never on mere
-    /// appearance -- see `FeedRowVisibility` for why the distinction matters.
-    private func markSeenIfScrolledPast(_ post: PostCardModel, at index: Int) {
-        let leftPastTop = rowVisibility.rowDisappeared(index)
-        guard leftPastTop, dependencies.settings.autoMarkSeenWhileScrolling, !post.isSeen else { return }
-        store.setSeen(true, postID: post.id)
+    /// Marks everything above the topmost visible row as read. See
+    /// `FeedScrollReadRule` for why this is recomputed rather than tracked.
+    private func markPostsScrolledPast() {
+        guard dependencies.settings.autoMarkSeenWhileScrolling else { return }
+        let read = FeedScrollReadRule.postsScrolledPast(
+            in: visiblePosts,
+            visibleIDs: scrollTracker.visibleIDs,
+            isScrolledFromTop: scrollTracker.isScrolledFromTop
+        )
+        guard !read.isEmpty else { return }
+        store.setSeen(true, postIDs: read)
     }
 
     private func markVisibleSeen() {
