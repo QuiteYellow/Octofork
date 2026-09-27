@@ -111,16 +111,67 @@ enum OctonautMuxOutcome: Equatable, Sendable {
 /// Without an explicit category the app runs under `soloAmbient`, where the
 /// hardware silent switch mutes playback outright -- so unmuted audio would
 /// still be silent for anyone with their ringer off.
-enum OctonautAudioSession {
-    static func activatePlayback() {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback)
-        try? session.setActive(true)
+/// Every `AVAudioSession` call is a synchronous XPC round trip to
+/// mediaserverd. Making those from the main thread on each viewer open and
+/// close does not merely stall the UI -- under the churn of scrolling, opening
+/// and dismissing repeatedly it takes the media server down with it, and once
+/// that happens every AVPlayer in the process is dead and playback cannot
+/// recover without relaunching:
+///
+///   AVAudioSession_iOS.mm:990  Invalid XPC connection, probably media server died
+///   PlayerRemoteXPC signalled err=-12860 (repeatedly, thereafter)
+///
+/// So the work happens on a private serial queue, the category is set once
+/// rather than per playback, activations are counted instead of toggled, and a
+/// deactivation is allowed to settle first -- a quick dismiss-then-reopen never
+/// reaches the session at all.
+final class OctonautAudioSession: @unchecked Sendable {
+    static let shared = OctonautAudioSession()
+
+    /// All mutable state below is confined to this queue, which is what makes
+    /// the unchecked `Sendable` conformance sound.
+    private let queue = DispatchQueue(label: "com.octonaut.audio-session", qos: .userInitiated)
+    private var isCategoryConfigured = false
+    private var activations = 0
+    private var pendingDeactivation: DispatchWorkItem?
+
+    private init() {}
+
+    static func activatePlayback() { shared.begin() }
+    static func deactivate() { shared.end() }
+
+    private func begin() {
+        queue.async { [self] in
+            pendingDeactivation?.cancel()
+            pendingDeactivation = nil
+
+            let session = AVAudioSession.sharedInstance()
+            if !isCategoryConfigured {
+                try? session.setCategory(.playback, mode: .moviePlayback)
+                isCategoryConfigured = true
+            }
+
+            activations += 1
+            guard activations == 1 else { return }
+            try? session.setActive(true)
+        }
     }
 
-    static func deactivate() {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+    private func end() {
+        queue.async { [self] in
+            activations = max(0, activations - 1)
+            guard activations == 0 else { return }
+
+            pendingDeactivation?.cancel()
+            let work = DispatchWorkItem { [self] in
+                guard activations == 0 else { return }
+                try? AVAudioSession.sharedInstance()
+                    .setActive(false, options: [.notifyOthersOnDeactivation])
+                pendingDeactivation = nil
+            }
+            pendingDeactivation = work
+            queue.asyncAfter(deadline: .now() + 2, execute: work)
+        }
     }
 }
 
@@ -1766,7 +1817,9 @@ struct OctonautVideoDetailView: View {
             looper.detach()
             onPlayerChange?(nil)
             coordinator.endFullScreen()
-            OctonautAudioSession.deactivate()
+            if !startsMuted {
+                OctonautAudioSession.deactivate()
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video player")
