@@ -76,6 +76,7 @@
 		8CA23243F7DA2FF3E0B3F8F8 /* CoreModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FAFC02501E15306D88C1557 /* CoreModels.swift */; };
 		8CD55353A7DBBB6CD6044E0E /* CoreModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FAFC02501E15306D88C1557 /* CoreModels.swift */; };
 		8F67E8978EAB56139ADDFFB5 /* DeterministicExcerpts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956BE1DAA7CF7A4589793448 /* DeterministicExcerpts.swift */; };
+		9106AC28FEF4C335387FFA49 /* OctonautPlayerControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F708CABD2C643A1BC4DAFF /* OctonautPlayerControls.swift */; };
 		9A6B651A8ED84A5BDA336B88 /* CredentialVaultAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65FFA69A452BC8037ACCF243 /* CredentialVaultAdapter.swift */; };
 		9AC0CA6179F48600E3A25EA3 /* AccountCredentialVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90737E4E17F08A9D5702FDFB /* AccountCredentialVault.swift */; };
 		A56DD52680A9780141EF2773 /* MacRedditLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A40BD8CDE0AA06BEBDEF658 /* MacRedditLoginView.swift */; };
@@ -151,6 +152,7 @@
 		35748B9785F8F55A63306C74 /* SemanticFilterEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SemanticFilterEngine.swift; sourceTree = "<group>"; };
 		391984C780F7CF0F2A6F0535 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		3E07930B4DE408F45C34596E /* FeatureModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeatureModels.swift; sourceTree = "<group>"; };
+		42F708CABD2C643A1BC4DAFF /* OctonautPlayerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OctonautPlayerControls.swift; sourceTree = "<group>"; };
 		4DD643A89061C969F106E42D /* OctonautMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OctonautMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4EA472F0D0173FA4B790DED6 /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
 		573291A83CE53B9C67DE560C /* SwiftDataModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwiftDataModels.swift; sourceTree = "<group>"; };
@@ -340,6 +342,7 @@
 				FA78F7A3D822A78F118E91B5 /* OctonautComponents.swift */,
 				5E702C6ADAEE69BA35D8C9B9 /* OctonautImageCache.swift */,
 				7ECC0450C9C3B6FFD48B55D2 /* OctonautMediaComponents.swift */,
+				42F708CABD2C643A1BC4DAFF /* OctonautPlayerControls.swift */,
 				E8C1D8C8CD1F632A97A33C0F /* OctonautTheme.swift */,
 			);
 			path = DesignSystem;
@@ -681,6 +684,7 @@
 				590432E0F5CBC5E868AFF8AD /* OctonautComponents.swift in Sources */,
 				1EC16D8B1EC6BA339C9325F1 /* OctonautImageCache.swift in Sources */,
 				BF1C2786A748926187B88613 /* OctonautMediaComponents.swift in Sources */,
+				9106AC28FEF4C335387FFA49 /* OctonautPlayerControls.swift in Sources */,
 				7CB6007C1EEC3F834E010666 /* OctonautTheme.swift in Sources */,
 				F3225E81B27E68D7DFD3AECE /* PersistenceStore.swift in Sources */,
 				08FE98856267A5EE1B55B6BA /* PostDetailViews.swift in Sources */,
@@ -787,7 +791,6 @@
 				INFOPLIST_FILE = OctonautApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Octonaut;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.news";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -984,7 +987,6 @@
 				INFOPLIST_FILE = OctonautApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Octonaut;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.news";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
