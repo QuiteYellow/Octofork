@@ -167,6 +167,39 @@ private enum OctonautAVPlayerFactory {
     }
 }
 
+/// Hands playback back and forth between a feed row and the full screen
+/// viewer.
+///
+/// Two problems it solves. A feed row behind a `fullScreenCover` never gets
+/// `onDisappear`, so without this it keeps playing underneath the viewer. And
+/// the viewer builds its own `AVPlayer`, so without a shared playhead it would
+/// always restart from zero rather than continuing from wherever the row had
+/// reached.
+@MainActor
+@Observable
+final class OctonautPlaybackCoordinator {
+    static let shared = OctonautPlaybackCoordinator()
+
+    /// While true the viewer owns playback and feed rows stay paused.
+    private(set) var isFullScreenActive = false
+
+    @ObservationIgnored private var positions: [URL: Double] = [:]
+
+    private init() {}
+
+    func position(for url: URL) -> Double? {
+        positions[url]
+    }
+
+    func record(_ seconds: Double, for url: URL) {
+        guard seconds.isFinite, seconds >= 0 else { return }
+        positions[url] = seconds
+    }
+
+    func beginFullScreen() { isFullScreenActive = true }
+    func endFullScreen() { isFullScreenActive = false }
+}
+
 /// Warms the small media window immediately around the visible feed rows.
 /// Prepared players stay paused until their row reports that it is on screen.
 @MainActor
@@ -374,6 +407,7 @@ struct OctonautInlineMediaView: View {
                             autoplay: dependencies.settings.autoplayVideo.shouldAutoplay(
                                 isConnectedViaWiFi: networkStatus.isConnectedViaWiFi
                             ) && (preloader == nil || isVisibleInFeed),
+                            loops: post.mediaKind == "gif",
                             preloader: preloader
                         )
                         .overlay { openVideoButton }
@@ -597,10 +631,18 @@ struct OctonautVideoPlayer: View {
     var audioURL: URL?
     var muted = true
     var autoplay = false
+    var loops = false
     var preloader: OctonautFeedMediaPreloader?
     @State private var player: AVPlayer?
     @State private var aspectRatio: CGFloat = 16 / 9
     @State private var playbackRequested = false
+    @State private var looper = OctonautVideoLooper()
+    @State private var positionObserver: Any?
+
+    private var coordinator: OctonautPlaybackCoordinator { .shared }
+
+    /// The viewer takes over playback while it is open.
+    private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
 
     private var playbackRequest: PlaybackRequest {
         PlaybackRequest(url: url, audioURL: audioURL)
@@ -621,7 +663,8 @@ struct OctonautVideoPlayer: View {
             }
         }
         .task(id: playbackRequest) {
-            playbackRequested = autoplay
+            playbackRequested = shouldPlay
+            removePositionObserver()
             player?.pause()
             player = nil
             let playback: OctonautAVPlayerFactory.Playback
@@ -633,24 +676,68 @@ struct OctonautVideoPlayer: View {
             guard !Task.isCancelled else { return }
             playback.player.isMuted = muted
             aspectRatio = playback.aspectRatio
+            if loops {
+                looper.attach(to: playback.player)
+            }
             player = playback.player
+            observePosition(of: playback.player)
             if playbackRequested {
                 playback.player.play()
             }
         }
-        .onChange(of: autoplay) { _, shouldAutoplay in
+        .onChange(of: shouldPlay) { _, shouldAutoplay in
             playbackRequested = shouldAutoplay
             if shouldAutoplay {
+                // Resume wherever the viewer left off rather than where this
+                // row was when it handed playback over.
+                if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
+                    player?.seek(
+                        to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                        toleranceBefore: .zero,
+                        toleranceAfter: .zero
+                    )
+                }
                 player?.play()
             } else {
+                if let player {
+                    coordinator.record(player.currentTime().seconds, for: url)
+                }
                 player?.pause()
             }
         }
         .onDisappear {
             playbackRequested = false
+            if let player {
+                coordinator.record(player.currentTime().seconds, for: url)
+            }
             player?.pause()
+            removePositionObserver()
+            looper.detach()
         }
         .accessibilityLabel("Video")
+    }
+
+    /// Records the playhead as it moves so opening the viewer can pick up from
+    /// where the row actually was, without depending on the order in which
+    /// SwiftUI delivers the full screen transition.
+    private func observePosition(of player: AVPlayer) {
+        removePositionObserver()
+        positionObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            MainActor.assumeIsolated {
+                guard !OctonautPlaybackCoordinator.shared.isFullScreenActive else { return }
+                OctonautPlaybackCoordinator.shared.record(time.seconds, for: url)
+            }
+        }
+    }
+
+    private func removePositionObserver() {
+        if let positionObserver, let player {
+            player.removeTimeObserver(positionObserver)
+        }
+        positionObserver = nil
     }
 
     private struct PlaybackRequest: Hashable {
@@ -910,6 +997,9 @@ struct OctonautMediaViewer: View {
     @State private var dismissOffset: CGFloat = 0
     @State private var dismissalAxis: DismissalAxis?
     @State private var isDismissing = false
+    @State private var activePlayer: AVPlayer?
+    @State private var isPlayerMuted = false
+    @State private var chromeHideTask: Task<Void, Never>?
 
     private let saveCoordinator = OctonautMediaSaveCoordinator()
 
@@ -955,7 +1045,13 @@ struct OctonautMediaViewer: View {
                                 ForEach(Array(mediaURLs.enumerated()), id: \.offset) { index, url in
                                     Group {
                                         if post.mediaKind == "video" || post.mediaKind == "gif" {
-                                            OctonautVideoDetailView(url: url, audioURL: post.audioURL)
+                                            OctonautVideoDetailView(
+                                                url: url,
+                                                audioURL: post.audioURL,
+                                                loops: post.mediaKind == "gif",
+                                                startsMuted: post.mediaKind == "gif",
+                                                onPlayerChange: { activePlayer = $0 }
+                                            )
                                         } else if post.mediaKind == "embeddedVideo",
                                                   let embedURL = EmbeddedVideoURL.embedURL(for: url) {
                                             ZStack {
@@ -1012,102 +1108,7 @@ struct OctonautMediaViewer: View {
                     .ignoresSafeArea(.container, edges: .all)
                 }
 
-                if showOverlay {
-                    VStack(spacing: 0) {
-                        HStack {
-                        Button("Close", systemImage: "xmark") { dismiss() }
-                            .labelStyle(.iconOnly)
-                            .accessibilityLabel("Close media viewer")
-                        Spacer()
-                        Text("\(min(page + 1, max(mediaURLs.count, 1))) / \(max(mediaURLs.count, 1))")
-                            .font(.caption.weight(.semibold).monospacedDigit())
-                        Spacer()
-                        if let mediaURL = mediaURLs[safe: page] ?? post.mediaURL {
-                            Menu {
-                                Button { saveMedia(mediaURL, destination: .photos) } label: {
-                                    Label("Save to Photos", systemImage: "photo.badge.arrow.down")
-                                }
-                                if mediaURLs.count > 1 {
-                                    Button { saveAllMediaToPhotos() } label: {
-                                        Label("Save All Media to Photos", systemImage: "photo.stack")
-                                    }
-                                }
-                                Button { saveMedia(mediaURL, destination: .files) } label: {
-                                    Label("Save to Files", systemImage: "folder.badge.plus")
-                                }
-                            } label: {
-                                Image(systemName: "arrow.down.circle")
-                                    .font(.title3)
-                            }
-                            .disabled(isSaving)
-                            .opacity(isSaving || saveConfirmation != nil ? 0 : 1)
-                            .overlay {
-                                // Keep live feedback outside the native menu's label.
-                                Group {
-                                    if isSaving {
-                                        ProgressView()
-                                            .tint(.white)
-                                    } else if saveConfirmation != nil {
-                                        Image(systemName: "checkmark.circle")
-                                            .font(.title3)
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                            }
-                            .accessibilityLabel("Save media")
-                            .accessibilityValue(isSaving ? "Saving media" : saveConfirmation ?? "")
-                        }
-                        Menu {
-                            if let onSave {
-                                Button { onSave() } label: { Label(post.isSaved ? "Unsave" : "Save", systemImage: "bookmark") }
-                            }
-                            ShareLink(item: mediaURLs[safe: page] ?? post.shareURL) { Label("Share", systemImage: "square.and.arrow.up") }
-                            Button { onOpenPost?(); dismiss() } label: { Label("Open Post", systemImage: "doc.text") }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.title3)
-                        }
-                        .accessibilityLabel("Media actions")
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 10)
-                        .foregroundStyle(.white)
-                        .background(LinearGradient(colors: [.black.opacity(0.72), .clear], startPoint: .top, endPoint: .bottom))
-                        Spacer()
-                        if mediaURLs.count > 1 {
-                        HStack(spacing: 6) {
-                            ForEach(mediaURLs.indices, id: \.self) { index in
-                                Circle()
-                                    .fill(index == page ? .white : .white.opacity(0.38))
-                                    .frame(
-                                        width: index == page ? 7 : 6,
-                                        height: index == page ? 7 : 6
-                                    )
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(.black.opacity(0.45), in: Capsule())
-                        .padding(.bottom, post.title.isEmpty ? 16 : 4)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Image \(page + 1) of \(mediaURLs.count)")
-                        }
-                        if post.title != "" {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(post.title).font(.headline).lineLimit(3)
-                            Text("r/\(post.community) • \(post.score.formatted()) points")
-                                .font(.caption).foregroundStyle(.white.opacity(0.78))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .foregroundStyle(.white)
-                        .background(LinearGradient(colors: [.clear, .black.opacity(0.82)], startPoint: .top, endPoint: .bottom))
-                        }
-                    }
-                    .transition(.opacity)
-                }
+                chromeOverlay
             }
             .offset(y: dismissOffset)
             .scaleEffect(1 - (dismissalProgress * 0.08))
@@ -1117,6 +1118,23 @@ struct OctonautMediaViewer: View {
         .simultaneousGesture(dismissalGesture, isEnabled: !isZoomed && !isDismissing)
         .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showOverlay.toggle() } }
         .onChange(of: page) { _, _ in isZoomed = false }
+        .onChange(of: activePlayer == nil) { _, hasNoPlayer in
+            if hasNoPlayer {
+                cancelChromeHide()
+            } else {
+                scheduleChromeHide()
+            }
+        }
+        .onChange(of: showOverlay) { _, isVisible in
+            // A tap that brings the chrome back restarts the countdown;
+            // hiding it manually stops the timer from fighting the user.
+            if isVisible && activePlayer != nil {
+                scheduleChromeHide()
+            } else if !isVisible {
+                cancelChromeHide()
+            }
+        }
+        .onDisappear { cancelChromeHide() }
         .onChange(of: saveConfirmation) { _, confirmation in
             if confirmation != nil {
                 showOverlay = true
@@ -1134,6 +1152,117 @@ struct OctonautMediaViewer: View {
             Button("OK", role: .cancel) { saveError = nil }
         } message: {
             Text(saveError ?? "The media could not be saved.")
+        }
+    }
+
+    /// Extracted from `body`: inlined, the viewer's chrome pushed the whole
+    /// expression past what the type-checker will solve in reasonable time.
+    @ViewBuilder
+    private var chromeOverlay: some View {
+        if showOverlay {
+            VStack(spacing: 0) {
+                HStack {
+                Button("Close", systemImage: "xmark") { dismiss() }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Close media viewer")
+                Spacer()
+                Text("\(min(page + 1, max(mediaURLs.count, 1))) / \(max(mediaURLs.count, 1))")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                Spacer()
+                if let mediaURL = mediaURLs[safe: page] ?? post.mediaURL {
+                    Menu {
+                        Button { saveMedia(mediaURL, destination: .photos) } label: {
+                            Label("Save to Photos", systemImage: "photo.badge.arrow.down")
+                        }
+                        if mediaURLs.count > 1 {
+                            Button { saveAllMediaToPhotos() } label: {
+                                Label("Save All Media to Photos", systemImage: "photo.stack")
+                            }
+                        }
+                        Button { saveMedia(mediaURL, destination: .files) } label: {
+                            Label("Save to Files", systemImage: "folder.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title3)
+                    }
+                    .disabled(isSaving)
+                    .opacity(isSaving || saveConfirmation != nil ? 0 : 1)
+                    .overlay {
+                        // Keep live feedback outside the native menu's label.
+                        Group {
+                            if isSaving {
+                                ProgressView()
+                                    .tint(.white)
+                            } else if saveConfirmation != nil {
+                                Image(systemName: "checkmark.circle")
+                                    .font(.title3)
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                    }
+                    .accessibilityLabel("Save media")
+                    .accessibilityValue(isSaving ? "Saving media" : saveConfirmation ?? "")
+                }
+                Menu {
+                    if let onSave {
+                        Button { onSave() } label: { Label(post.isSaved ? "Unsave" : "Save", systemImage: "bookmark") }
+                    }
+                    ShareLink(item: mediaURLs[safe: page] ?? post.shareURL) { Label("Share", systemImage: "square.and.arrow.up") }
+                    Button { onOpenPost?(); dismiss() } label: { Label("Open Post", systemImage: "doc.text") }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
+                }
+                .accessibilityLabel("Media actions")
+                }
+                .padding(.horizontal)
+                .padding(.top, 10)
+                .foregroundStyle(.white)
+                .background(LinearGradient(colors: [.black.opacity(0.72), .clear], startPoint: .top, endPoint: .bottom))
+                Spacer()
+                if mediaURLs.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(mediaURLs.indices, id: \.self) { index in
+                        Circle()
+                            .fill(index == page ? .white : .white.opacity(0.38))
+                            .frame(
+                                width: index == page ? 7 : 6,
+                                height: index == page ? 7 : 6
+                            )
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.45), in: Capsule())
+                .padding(.bottom, post.title.isEmpty ? 16 : 4)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Image \(page + 1) of \(mediaURLs.count)")
+                }
+                if let activePlayer {
+                OctonautPlayerControls(
+                    player: activePlayer,
+                    isMuted: $isPlayerMuted,
+                    onInteraction: scheduleChromeHide
+                )
+                .padding(.horizontal, 10)
+                .padding(.bottom, post.title.isEmpty ? 10 : 4)
+                }
+                if post.title != "" {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(post.title).font(.headline).lineLimit(3)
+                    Text("r/\(post.community) • \(post.score.formatted()) points")
+                        .font(.caption).foregroundStyle(.white.opacity(0.78))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .foregroundStyle(.white)
+                .background(LinearGradient(colors: [.clear, .black.opacity(0.82)], startPoint: .top, endPoint: .bottom))
+                }
+            }
+            .transition(.opacity)
         }
     }
 
@@ -1173,6 +1302,25 @@ struct OctonautMediaViewer: View {
                     }
                 }
             }
+    }
+
+    /// Video chrome gets out of the way on its own, the way a player is
+    /// expected to behave. Images keep their chrome until tapped.
+    private func scheduleChromeHide() {
+        chromeHideTask?.cancel()
+        if !showOverlay {
+            withAnimation(.easeOut(duration: 0.2)) { showOverlay = true }
+        }
+        chromeHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) { showOverlay = false }
+        }
+    }
+
+    private func cancelChromeHide() {
+        chromeHideTask?.cancel()
+        chromeHideTask = nil
     }
 
     private func finishInteractiveDismissal(direction: CGFloat) {
@@ -1265,18 +1413,64 @@ struct OctonautMediaViewer: View {
     }
 }
 
+/// Restarts a player when it reaches the end. GIFs arrive as ordinary mp4s
+/// once the codec resolves their preview variant, so looping is what makes
+/// them read as GIFs rather than very short videos.
+@MainActor
+final class OctonautVideoLooper {
+    private var observer: (any NSObjectProtocol)?
+
+    func attach(to player: AVPlayer) {
+        detach()
+        player.actionAtItemEnd = .none
+        observer = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification,
+            object: player.currentItem,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                player.seek(to: .zero)
+                player.play()
+            }
+        }
+    }
+
+    func detach() {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observer = nil
+    }
+}
+
 @MainActor
 struct OctonautVideoDetailView: View {
     let url: URL
     var audioURL: URL?
+    var loops = false
+    var autoplay = true
+    /// AVPlayerViewController's controls cannot be inset, so they collided
+    /// with the viewer's own chrome. The viewer draws `OctonautPlayerControls`
+    /// in its overlay stack instead.
+    var showsSystemControls = false
+    /// GIFs carry no audio track; real videos should open audible.
+    var startsMuted = false
+    var onPlayerChange: ((AVPlayer?) -> Void)?
     @State private var player: AVPlayer?
+    @State private var looper = OctonautVideoLooper()
+    @State private var positionObserver: Any?
+
+    private var coordinator: OctonautPlaybackCoordinator { .shared }
 
     var body: some View {
         ZStack {
             Color.black
             if let player {
-                OctonautSystemIsolatedVideoPlayer(player: player)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                OctonautSystemIsolatedVideoPlayer(
+                    player: player,
+                    showsPlaybackControls: showsSystemControls
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView()
                     .tint(.white)
@@ -1284,13 +1478,87 @@ struct OctonautVideoDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: url) {
+            coordinator.beginFullScreen()
             let playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
-            playback.player.isMuted = true
+            guard !Task.isCancelled else { return }
+            playback.player.isMuted = startsMuted
+
+            // The factory builds deliberately isolated players so feed rows
+            // cannot hijack a system AirPlay session. Here the viewer is front
+            // and centre and the user asked for the route, so allow it.
+            playback.player.allowsExternalPlayback = true
+
+            if !startsMuted {
+                activatePlaybackAudioSession()
+            }
+            if loops {
+                looper.attach(to: playback.player)
+            }
+
+            // Continue from wherever the feed row had reached.
+            if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
+                await playback.player.seek(
+                    to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+            }
+
             player = playback.player
+            observePosition(of: playback.player)
+            onPlayerChange?(playback.player)
+            if autoplay {
+                playback.player.play()
+            }
         }
-        .onDisappear { player?.pause() }
+        .onDisappear {
+            if let player {
+                coordinator.record(player.currentTime().seconds, for: url)
+            }
+            player?.pause()
+            removePositionObserver()
+            looper.detach()
+            onPlayerChange?(nil)
+            coordinator.endFullScreen()
+            deactivatePlaybackAudioSession()
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video player")
+    }
+
+    /// Keeps the shared playhead current so dismissing the viewer hands the
+    /// feed row back the position the user actually watched to.
+    private func observePosition(of player: AVPlayer) {
+        removePositionObserver()
+        positionObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            MainActor.assumeIsolated {
+                OctonautPlaybackCoordinator.shared.record(time.seconds, for: url)
+            }
+        }
+    }
+
+    private func removePositionObserver() {
+        if let positionObserver, let player {
+            player.removeTimeObserver(positionObserver)
+        }
+        positionObserver = nil
+    }
+
+    /// Without an explicit category the app runs under `soloAmbient`, where the
+    /// hardware silent switch mutes playback entirely -- so an unmuted video
+    /// would still be silent for anyone with their ringer off.
+    private func activatePlaybackAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+    }
+
+    private func deactivatePlaybackAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setActive(false, options: [.notifyOthersOnDeactivation])
     }
 }
 
