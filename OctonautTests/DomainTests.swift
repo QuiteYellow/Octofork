@@ -1244,4 +1244,58 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(card.community, "swift")
         XCTAssertEqual(card.score, 42)
     }
+
+    func testAnimatedGIFPostResolvesToTheMP4VariantAsLoopingVideo() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gif1","name":"t3_gif1","permalink":"/r/aww/comments/gif1/a-cat/","title":"A cat","subreddit":"aww","url":"https://i.redd.it/abc123.gif","post_hint":"image","preview":{"images":[{"source":{"url":"https://preview.redd.it/abc123.gif?width=640","width":640,"height":480},"variants":{"mp4":{"source":{"url":"https://preview.redd.it/abc123.gif?format=mp4&amp;s=sig","width":640,"height":480}}}}]}}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "gif")
+        XCTAssertTrue(card.isVideo)
+        XCTAssertEqual(
+            card.mediaURL?.absoluteString,
+            "https://preview.redd.it/abc123.gif?format=mp4&s=sig"
+        )
+        XCTAssertNil(card.audioURL)
+    }
+
+    func testImgurGIFWithoutAPreviewVariantFallsBackToTheMP4Path() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gif2","name":"t3_gif2","permalink":"/r/funny/comments/gif2/a-clip/","title":"A clip","subreddit":"funny","url":"https://i.imgur.com/xyz789.gif"}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "gif")
+        XCTAssertEqual(card.mediaURL?.absoluteString, "https://i.imgur.com/xyz789.mp4")
+    }
+
+    func testStaticImagePostIsStillDecodedAsAnImage() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"img1","name":"t3_img1","permalink":"/r/pics/comments/img1/a-photo/","title":"A photo","subreddit":"pics","url":"https://i.redd.it/static123.jpg","post_hint":"image","preview":{"images":[{"source":{"url":"https://preview.redd.it/static123.jpg","width":1920,"height":1080},"variants":{}}]}}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "image")
+        XCTAssertFalse(card.isVideo)
+    }
+
+    func testRedditHostedGIFVideoStillKeepsItsSilentTrack() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gif3","name":"t3_gif3","permalink":"/r/aww/comments/gif3/a-pup/","title":"A pup","subreddit":"aww","url":"https://v.redd.it/pup123","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/pup123/DASH_720.mp4","is_gif":true,"has_audio":false}}}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "gif")
+        XCTAssertEqual(card.mediaURL?.absoluteString, "https://v.redd.it/pup123/DASH_720.mp4")
+        XCTAssertNil(card.audioURL)
+    }
 }
