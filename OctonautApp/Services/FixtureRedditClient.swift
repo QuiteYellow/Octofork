@@ -155,7 +155,12 @@ actor FixtureRedditClient: RedditClient {
         )
     }
 
-    func userComments(_ username: String, after: String? = nil, account: AccountID? = nil) async throws -> Listing<UserComment> {
+    func userComments(
+        _ username: String,
+        section: UserSection = .comments,
+        after: String? = nil,
+        account: AccountID? = nil
+    ) async throws -> Listing<UserComment> {
         Listing(items: [])
     }
 

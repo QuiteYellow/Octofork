@@ -412,6 +412,96 @@ final class SettingsTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "unknown.future.setting"))
     }
 
+    // MARK: - Profile sections
+
+    func testUserSectionListingUsesTheSectionRouteWithoutASortPathSegment() async throws {
+        UserSectionRouteProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UserSectionRouteProtocol.self]
+        let account = AccountID()
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic-test-session")])
+        let client = URLSessionRedditClient(credentialVault: vault, sessionConfiguration: configuration)
+
+        let page = try await client.listing(
+            ListingRequest(
+                feed: FeedDescriptor(
+                    destination: .user(username: "Example_Author", section: .saved),
+                    sort: .new
+                ),
+                limit: 35,
+                accountScope: .account(account),
+                responseCachePolicy: .reloadIgnoringCache
+            ),
+            account: account
+        )
+
+        XCTAssertEqual(page.items.map(\.id), ["saved"])
+        let request = try XCTUnwrap(UserSectionRouteProtocol.requests.first)
+        let url = try XCTUnwrap(request.url)
+        XCTAssertEqual(url.path, "/user/Example_Author/saved.json")
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertTrue(query.contains(URLQueryItem(name: "sort", value: "new")))
+        // A mixed listing is narrowed to posts, since `listing` only returns posts.
+        XCTAssertTrue(query.contains(URLQueryItem(name: "type", value: "links")))
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "reddit_session=synthetic-test-session")
+    }
+
+    func testSavedCommentsUseTheSameRouteNarrowedToComments() async throws {
+        UserSectionRouteProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UserSectionRouteProtocol.self]
+        let account = AccountID()
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic-test-session")])
+        let client = URLSessionRedditClient(credentialVault: vault, sessionConfiguration: configuration)
+
+        let page = try await client.userComments("Example_Author", section: .saved, after: nil, account: account)
+
+        XCTAssertEqual(page.items.map(\.id), ["savedcomment"])
+        let url = try XCTUnwrap(UserSectionRouteProtocol.requests.first?.url)
+        XCTAssertEqual(url.path, "/user/Example_Author/saved.json")
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertTrue(query.contains(URLQueryItem(name: "type", value: "comments")))
+    }
+
+    func testProfileSubmittedListingDoesNotAskForALinksOnlyListing() async throws {
+        UserSectionRouteProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UserSectionRouteProtocol.self]
+        let client = URLSessionRedditClient(credentialVault: InMemoryCredentialVault(), sessionConfiguration: configuration)
+
+        _ = try await client.listing(
+            ListingRequest(
+                feed: FeedDescriptor(
+                    destination: .user(username: "Example_Author", section: .submitted),
+                    sort: .new
+                ),
+                responseCachePolicy: .reloadIgnoringCache
+            ),
+            account: nil
+        )
+
+        let url = try XCTUnwrap(UserSectionRouteProtocol.requests.last?.url)
+        XCTAssertEqual(url.path, "/user/Example_Author/submitted.json")
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertFalse(query.contains { $0.name == "type" })
+    }
+
+    func testFetchUserSectionAsksForTheSavedListingAndReturnsItsRows() async throws {
+        let client = FixtureRedditClient(
+            listingData: Data(#"{"data":{"children":[{"kind":"t3","data":{"id":"saved","name":"t3_saved","title":"A saved post","subreddit":"swift","permalink":"/r/swift/comments/saved/title/","author":"reader"}}],"after":"t3_next"}}"#.utf8)
+        )
+        let store = OctonautFeatureStore(reddit: client)
+
+        let page = try await store.fetchUserSection(.saved, username: "Example_Author")
+
+        XCTAssertEqual(page.posts.map(\.id), ["saved"])
+        XCTAssertEqual(page.nextPage, "t3_next")
+        let captured = await client.lastListingRequest
+        let request = try XCTUnwrap(captured)
+        XCTAssertEqual(request.feed.destination, .user(username: "Example_Author", section: .saved))
+        XCTAssertEqual(request.feed.sort, .new)
+    }
+
     // MARK: - Top time range
 
     func testTopSortCarriesATimeRangeAndOtherSortsDoNot() async throws {
@@ -501,6 +591,44 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: "appearance.selfTextPreviewLines"), 20)
         XCTAssertEqual(defaults.integer(forKey: "appearance.linkDescriptionLines"), 0)
     }
+}
+
+/// Serves every profile-section route with one post and one comment. These
+/// tests never contact Reddit.
+private final class UserSectionRouteProtocol: URLProtocol, @unchecked Sendable {
+    private static let storage = RequestStorage()
+    private final class RequestStorage: @unchecked Sendable {
+        let lock = NSLock()
+        var values: [URLRequest] = []
+    }
+    static var requests: [URLRequest] {
+        storage.lock.lock()
+        defer { storage.lock.unlock() }
+        return storage.values
+    }
+    static func reset() {
+        storage.lock.lock()
+        defer { storage.lock.unlock() }
+        storage.values = []
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.storage.lock.lock()
+        Self.storage.values.append(request)
+        Self.storage.lock.unlock()
+        let url = request.url!
+        let data = Data(#"""
+        {"data":{"after":"t3_next","before":null,"children":[
+          {"kind":"t3","data":{"id":"saved","name":"t3_saved","title":"A saved post","subreddit":"swift","permalink":"/r/swift/comments/saved/title/","author":"reader"}},
+          {"kind":"t1","data":{"id":"savedcomment","name":"t1_savedcomment","parent_id":"t3_saved","body":"A saved comment","subreddit":"swift","author":"reader","link_title":"A saved post","link_permalink":"https://www.reddit.com/r/swift/comments/saved/title/"}}
+        ]}}
+        """#.utf8)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 /// Intercepts every request. These tests never contact Reddit.

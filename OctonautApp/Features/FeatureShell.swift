@@ -804,6 +804,8 @@ struct OctonautDestinationView: View {
             ConversationView(itemID: id, store: store, router: router)
         case .account(let username):
             UserProfileView(username: username, store: store, router: router)
+        case .userSection(let username, let section):
+            UserSectionView(username: username, section: section, store: store)
         case .settings(let destination):
             SettingsDetailView(destination: destination, store: store, router: router)
         case .composer(let kind):
