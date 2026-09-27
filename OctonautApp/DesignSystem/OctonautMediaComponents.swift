@@ -142,22 +142,40 @@ private enum OctonautAVPlayerFactory {
                 muxOutcome: .notApplicable
             )
         }
-        let audioAsset = AVURLAsset(url: audioURL)
+        // Loading the two separately stops an audio failure -- the common
+        // case, since the audio filename is guessed -- from being reported as
+        // a video failure and from poisoning the video asset.
         let videoTracks: [AVAssetTrack]
-        let audioTracks: [AVAssetTrack]
         do {
             videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
-            audioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
+        } catch is CancellationError {
+            // A cancelled task is not a mux failure; the view is going away.
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .notApplicable
+            )
         } catch {
             return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
-                muxOutcome: .videoOnly(reason: "track load failed: \(error.localizedDescription)")
+                muxOutcome: .videoOnly(reason: "video track load failed: \(error.localizedDescription)")
+            )
+        }
+
+        let audio = await loadAudio(preferred: audioURL, videoURL: videoURL)
+        let audioAsset = audio.asset
+        let audioTracks = audio.tracks
+        if let failure = audio.failure {
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: failure)
             )
         }
         guard let videoTrack = videoTracks.first else {
             return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
                 muxOutcome: .videoOnly(reason: "asset has no video track")
             )
@@ -166,7 +184,7 @@ private enum OctonautAVPlayerFactory {
         let composition = AVMutableComposition()
         guard let duration = try? await videoAsset.load(.duration) else {
             return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
                 muxOutcome: .videoOnly(reason: "video duration unavailable")
             )
@@ -174,7 +192,7 @@ private enum OctonautAVPlayerFactory {
         do {
             guard let compositionVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
                 return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
                 muxOutcome: .videoOnly(reason: "could not add composition video track")
             )
@@ -186,14 +204,14 @@ private enum OctonautAVPlayerFactory {
             // worth surfacing: the video plays, just silently.
             guard let audioTrack = audioTracks.first else {
                 return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
                 muxOutcome: .videoOnly(reason: "audio URL returned no audio track")
             )
             }
             guard let compositionAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
                 return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
                 muxOutcome: .videoOnly(reason: "could not add composition audio track")
             )
@@ -209,11 +227,65 @@ private enum OctonautAVPlayerFactory {
             )
         } catch {
             return Playback(
-                player: localPlaybackPlayer(asset: videoAsset),
+                player: localPlaybackPlayer(url: videoURL),
                 aspectRatio: aspectRatio,
                 muxOutcome: .videoOnly(reason: "composition failed: \(error.localizedDescription)")
             )
         }
+    }
+
+    /// Reddit does not always publish the DASH audio filename the codec
+    /// guesses from the video URL. The manifest is authoritative about which
+    /// representations exist, so a miss is retried against it -- fetched only
+    /// on failure, so the common case costs nothing.
+    private static func loadAudio(
+        preferred audioURL: URL,
+        videoURL: URL
+    ) async -> (asset: AVURLAsset, tracks: [AVAssetTrack], failure: String?) {
+        if let hit = await audioTracks(at: audioURL) {
+            return (hit.asset, hit.tracks, nil)
+        }
+
+        if let resolved = await manifestAudioURL(for: videoURL), resolved != audioURL {
+            if let hit = await audioTracks(at: resolved) {
+                return (hit.asset, hit.tracks, nil)
+            }
+            return (
+                AVURLAsset(url: audioURL), [],
+                "no audio at \(audioURL.lastPathComponent) or \(resolved.lastPathComponent)"
+            )
+        }
+
+        return (
+            AVURLAsset(url: audioURL), [],
+            "no audio at \(audioURL.lastPathComponent); manifest lists none"
+        )
+    }
+
+    private static func audioTracks(
+        at url: URL
+    ) async -> (asset: AVURLAsset, tracks: [AVAssetTrack])? {
+        let asset = AVURLAsset(url: url)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .audio),
+              !tracks.isEmpty else {
+            return nil
+        }
+        return (asset, tracks)
+    }
+
+    private static func manifestAudioURL(for videoURL: URL) async -> URL? {
+        guard let manifestURL = RedditDASHManifest.manifestURL(for: videoURL),
+              let (data, _) = try? await URLSession.shared.data(from: manifestURL) else {
+            return nil
+        }
+        return RedditDASHManifest.media(from: data, manifestURL: manifestURL)?.audio
+    }
+
+    /// Builds the fallback player from a fresh asset. The one whose load just
+    /// failed carries that failure cached, and an item made from it can refuse
+    /// to ever become ready to play -- a silent video would become no video.
+    private static func localPlaybackPlayer(url: URL) -> AVPlayer {
+        localPlaybackPlayer(item: AVPlayerItem(asset: AVURLAsset(url: url)))
     }
 
     private static func aspectRatio(for asset: AVAsset) async -> CGFloat {
@@ -1660,18 +1732,27 @@ struct OctonautVideoDetailView: View {
                 looper.attach(to: playback.player)
             }
 
-            // Continue from wherever the feed row had reached.
-            if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
-                await playback.player.seek(
-                    to: CMTime(seconds: resumeAt, preferredTimescale: 600),
-                    toleranceBefore: .zero,
-                    toleranceAfter: .zero
-                )
-            }
-
+            // Assign the player before seeking. The async seek does not return
+            // until the item is ready to play, and on an asset that never
+            // becomes ready it never returns at all -- which left the viewer
+            // on a spinner forever while the same media played fine in the
+            // feed, where nothing seeks.
             player = playback.player
             observePosition(of: playback.player)
             onPlayerChange?(playback.player)
+
+            // Continue from wherever the feed row had reached.
+            if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
+                // Completion-handler form: the bare seek maps to async and
+                // would reintroduce the wait this fix removes.
+                playback.player.seek(
+                    to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero,
+                    completionHandler: { _ in }
+                )
+            }
+
             if autoplay {
                 playback.player.play()
             }
