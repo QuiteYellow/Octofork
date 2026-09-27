@@ -30,10 +30,12 @@
 		28D7881C0CFAA71F88D8F779 /* SearchViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D724C5BF70A0A1C5C46D0111 /* SearchViews.swift */; };
 		2AAC5A021A873C125210365B /* Octonaut-Pearl-Blue.icon in Resources */ = {isa = PBXBuildFile; fileRef = BF332B6C9B23D7206BF523C6 /* Octonaut-Pearl-Blue.icon */; };
 		39751B6DDF3F1E06A5F76C22 /* Identifiers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18AD3CD2ACF4B2DE44C31C3D /* Identifiers.swift */; };
+		3C8985BE51391470721E6B1F /* FeedRowVisibility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16FEF889CC9FECCD74152106 /* FeedRowVisibility.swift */; };
 		3CA2654134ADBBDFB0A076C0 /* AccountCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E8E512134F4BB0198430532 /* AccountCoordinator.swift */; };
 		3E5EB1E81D32870F4429D4C5 /* PersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA26AD5A1014E91707FDDDD7 /* PersistenceTests.swift */; };
 		4032CFE0298933BC7DBE4311 /* InboxViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAC3454E3CFCA391F3C106CB /* InboxViews.swift */; };
 		4500EB9A95586062ABA29908 /* MediaRouteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 301023D4F19D27085751B67F /* MediaRouteView.swift */; };
+		4512A278354815923FEE052F /* FeedSeenFilterAccessory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 167D78C71BEB3D1A5C3E0635 /* FeedSeenFilterAccessory.swift */; };
 		4532EFB32D62E8E7FAC2B492 /* MacSidebarSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77C544E1607B287B34E2178C /* MacSidebarSelection.swift */; };
 		49993C78529346214E1B5A2E /* FeatureShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = F229AD88D7466DB47476E940 /* FeatureShell.swift */; };
 		4A0BEE640D7F7F1924EED880 /* AppRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D11EB2C11B6D9252906D7B9C /* AppRouter.swift */; };
@@ -113,6 +115,7 @@
 		F8484E72D969168A9C3DE685 /* MacSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E175DD18B0D8FAB91E72D58E /* MacSettingsView.swift */; };
 		F879EBCE6CA03B730726CB60 /* GalleryPagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18B6510ED91F17F1779EBB29 /* GalleryPagerView.swift */; };
 		FB057CAE75E007FB5120A089 /* AVFoundationMediaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD910ECAEFEEC348BF2686C2 /* AVFoundationMediaService.swift */; };
+		FB883ABED355D20A54961C3D /* FeedAccessoryModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13F9E204DC48A4E60F5E542E /* FeedAccessoryModifier.swift */; };
 		FD5331EB21B7C81B7F751882 /* FixtureRedditClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C883878DD07372A87014F548 /* FixtureRedditClient.swift */; };
 		FEA87EDEB99462ED2B28A0FC /* SemanticFilterEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35748B9785F8F55A63306C74 /* SemanticFilterEngine.swift */; };
 		FFED5E0582A677857B4B6D6B /* DeterministicExcerpts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956BE1DAA7CF7A4589793448 /* DeterministicExcerpts.swift */; };
@@ -133,8 +136,11 @@
 		0FAFC02501E15306D88C1557 /* CoreModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreModels.swift; sourceTree = "<group>"; };
 		131C7D7D8C76F8FE9AE80BCB /* AppleIntelligenceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleIntelligenceService.swift; sourceTree = "<group>"; };
 		13C35C509F4DD5385D92BB6B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		13F9E204DC48A4E60F5E542E /* FeedAccessoryModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedAccessoryModifier.swift; sourceTree = "<group>"; };
 		1415308689DC9AE1D0646C42 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
 		16341E71451A36AA0A6D0096 /* RedditLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedditLoginView.swift; sourceTree = "<group>"; };
+		167D78C71BEB3D1A5C3E0635 /* FeedSeenFilterAccessory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedSeenFilterAccessory.swift; sourceTree = "<group>"; };
+		16FEF889CC9FECCD74152106 /* FeedRowVisibility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedRowVisibility.swift; sourceTree = "<group>"; };
 		18AD3CD2ACF4B2DE44C31C3D /* Identifiers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Identifiers.swift; sourceTree = "<group>"; };
 		18B6510ED91F17F1779EBB29 /* GalleryPagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GalleryPagerView.swift; sourceTree = "<group>"; };
 		190933A8BDAB948EE2642069 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
@@ -311,6 +317,9 @@
 		7019DD525E4F2FF57C3F65EF /* Posts */ = {
 			isa = PBXGroup;
 			children = (
+				13F9E204DC48A4E60F5E542E /* FeedAccessoryModifier.swift */,
+				16FEF889CC9FECCD74152106 /* FeedRowVisibility.swift */,
+				167D78C71BEB3D1A5C3E0635 /* FeedSeenFilterAccessory.swift */,
 				274B8ADBE2F8F3DA22E4BF26 /* PostsViews.swift */,
 			);
 			path = Posts;
@@ -670,6 +679,9 @@
 				B1B61E3AA2884886E66F2F8D /* FeatureLoadState.swift in Sources */,
 				70458AE8255997DDB0BABD86 /* FeatureModels.swift in Sources */,
 				49993C78529346214E1B5A2E /* FeatureShell.swift in Sources */,
+				FB883ABED355D20A54961C3D /* FeedAccessoryModifier.swift in Sources */,
+				3C8985BE51391470721E6B1F /* FeedRowVisibility.swift in Sources */,
+				4512A278354815923FEE052F /* FeedSeenFilterAccessory.swift in Sources */,
 				FD5331EB21B7C81B7F751882 /* FixtureRedditClient.swift in Sources */,
 				B928A87382A758EF3E7D7360 /* Fixtures.swift in Sources */,
 				F879EBCE6CA03B730726CB60 /* GalleryPagerView.swift in Sources */,

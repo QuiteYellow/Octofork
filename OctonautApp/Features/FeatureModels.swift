@@ -900,6 +900,11 @@ final class OctonautFeatureStore {
     @ObservationIgnored private var loadedFeed: FeedDescriptorModel?
     @ObservationIgnored private var feedCache: [FeedCacheKey: FeedCacheEntry] = [:]
     @ObservationIgnored private let feedCacheFreshness: TimeInterval = 15 * 60
+    /// The locally recorded seen set, read once and then kept current by
+    /// `setSeen`. `loadSeenPostIDs` walks the whole table, so asking for it
+    /// once per page was work the feed did not need.
+    @ObservationIgnored private var seenPostIDs: Set<String> = []
+    @ObservationIgnored private var hasLoadedSeenPostIDs = false
     @ObservationIgnored private var communitiesRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var communitiesRefreshID: UUID?
     var posts: [PostCardModel] = [
@@ -961,6 +966,10 @@ final class OctonautFeatureStore {
     var moreLoadingIDs: Set<String> = []
     var moreFailedIDs: Set<String> = []
     var filteredPostCount = 0
+    /// Posts marked seen since the tally was last cleared. Drives the feed
+    /// accessory's running count, so it is deliberately a session value and
+    /// is never persisted.
+    private(set) var postsReadSinceReset = 0
     var userProfile: UserProfile?
     var userProfilePosts: [PostCardModel] = []
     var userProfileComments: [UserCommentCardModel] = []
@@ -1140,23 +1149,19 @@ final class OctonautFeatureStore {
         let selectedAccountID = accountID
         let selectedGeneration = accountGeneration
         do {
-            let listing = try await reddit.listing(
-                ListingRequest(
-                    feed: domainFeed(for: descriptor),
-                    limit: 35,
-                    accountScope: selectedAccountID.map(AccountScope.account) ?? .anonymous,
-                    responseCachePolicy: forceRefresh ? .reloadIgnoringCache : .useCache
-                ),
-                account: selectedAccountID
+            let page = try await loadFilteredPage(
+                from: reddit,
+                feed: domainFeed(for: descriptor),
+                after: nil,
+                accountScope: selectedAccountID.map(AccountScope.account) ?? .anonymous,
+                account: selectedAccountID,
+                responseCachePolicy: forceRefresh ? .reloadIgnoringCache : .useCache
             )
             guard feedRequestID == requestID, !Task.isCancelled, isCurrentAccount(selectedAccountID, generation: selectedGeneration)
             else { return }
-            let filtered = await applyFilters(to: listing.items)
-            guard feedRequestID == requestID, !Task.isCancelled, isCurrentAccount(selectedAccountID, generation: selectedGeneration)
-            else { return }
-            posts = filtered.posts.map(PostCardModel.init)
-            filteredPostCount = filtered.removedCount
-            nextPage = listing.after
+            posts = page.cards
+            filteredPostCount = page.removedCount
+            nextPage = page.after
             loadedFeed = descriptor
             feedState = posts.isEmpty ? .empty : .loaded
             feedCache[cacheKey] = FeedCacheEntry(
@@ -1630,25 +1635,20 @@ final class OctonautFeatureStore {
         let selectedAccountID = accountID
         let selectedGeneration = accountGeneration
         do {
-            let listing = try await reddit.listing(
-                ListingRequest(
-                    feed: domainFeed(for: descriptor),
-                    limit: 35,
-                    after: nextPage,
-                    accountScope: selectedAccountID.map(AccountScope.account) ?? .anonymous
-                ),
-                account: selectedAccountID
+            let page = try await loadFilteredPage(
+                from: reddit,
+                feed: domainFeed(for: descriptor),
+                after: nextPage,
+                accountScope: selectedAccountID.map(AccountScope.account) ?? .anonymous,
+                account: selectedAccountID,
+                responseCachePolicy: .useCache
             )
-            guard feedRequestID == requestID, !Task.isCancelled, loadedFeed == descriptor, isCurrentAccount(selectedAccountID, generation: selectedGeneration)
-            else { return }
-            let filtered = await applyFilters(to: listing.items)
             guard feedRequestID == requestID, !Task.isCancelled, loadedFeed == descriptor, self.nextPage == nextPage, isCurrentAccount(selectedAccountID, generation: selectedGeneration)
             else { return }
             let existing = Set(posts.map(\.id))
-            posts.append(
-                contentsOf: filtered.posts.filter { !existing.contains($0.id) }.map(PostCardModel.init))
-            filteredPostCount += filtered.removedCount
-            self.nextPage = listing.after == nextPage ? nil : listing.after
+            posts.append(contentsOf: page.cards.filter { !existing.contains($0.id) })
+            filteredPostCount += page.removedCount
+            self.nextPage = page.after
             feedState = posts.isEmpty ? .empty : .loaded
             feedCache[feedCacheKey(for: descriptor)] = FeedCacheEntry(
                 posts: posts,
@@ -1665,12 +1665,86 @@ final class OctonautFeatureStore {
         }
     }
 
-    private func applyFilters(to values: [Post]) async -> (posts: [Post], removedCount: Int) {
-        var seenIDs = Set<String>()
-        let hideSeen = settings?.hideSeenPosts ?? false
-        if hideSeen, let persistence {
-            seenIDs = Set((try? await persistence.loadSeenPostIDs()) ?? [])
+    private func seenPostIDSet() async -> Set<String> {
+        if hasLoadedSeenPostIDs { return seenPostIDs }
+        guard let persistence else { return [] }
+        seenPostIDs = Set((try? await persistence.loadSeenPostIDs()) ?? [])
+        hasLoadedSeenPostIDs = true
+        return seenPostIDs
+    }
+
+    /// Reddit's `hidden` flag is Reddit's, not ours, so a freshly decoded
+    /// card always arrives unseen. Stamping the local record onto it is what
+    /// keeps a post dimmed after a relaunch.
+    private func makeCards(from values: [Post], seenIDs: Set<String>) -> [PostCardModel] {
+        values.map { post in
+            var card = PostCardModel(post: post)
+            card.isSeen = card.isSeen || seenIDs.contains(post.id)
+            return card
         }
+    }
+
+    private struct FilteredPage {
+        var cards: [PostCardModel] = []
+        var removedCount = 0
+        var after: String?
+    }
+
+    /// Page sizes to try in turn. FUN-LIST-004 allows up to two more pages
+    /// after an empty one, so three in total. Reddit caps a listing at 100.
+    private static let filteredPageLimits = [35, 60, 100]
+
+    /// Fetches until a page survives filtering. A page can be filtered away
+    /// entirely -- easiest to do with "hide seen" on -- and an empty result
+    /// used to end the feed for good, because the row whose appearance asks
+    /// for the next page never rendered. Widening each retry is how Hydra's
+    /// reader escapes the same trap.
+    private func loadFilteredPage(
+        from reddit: any RedditClient,
+        feed: FeedDescriptor,
+        after: String?,
+        accountScope: AccountScope,
+        account: AccountID?,
+        responseCachePolicy: ListingRequest.ResponseCachePolicy
+    ) async throws -> FilteredPage {
+        var page = FilteredPage(after: after)
+        for limit in Self.filteredPageLimits {
+            try Task.checkCancellation()
+            let listing = try await reddit.listing(
+                ListingRequest(
+                    feed: feed,
+                    limit: limit,
+                    after: page.after,
+                    accountScope: accountScope,
+                    responseCachePolicy: responseCachePolicy
+                ),
+                account: account
+            )
+            // A cursor Reddit hands back unchanged is the end of the listing.
+            let nextCursor = listing.after == page.after ? nil : listing.after
+            // An empty response is the end of the feed, not a filter wipeout.
+            // Retrying would only ask for the same nothing again.
+            if listing.items.isEmpty {
+                page.after = nextCursor
+                break
+            }
+            let filtered = await applyFilters(to: listing.items)
+            page.removedCount += filtered.removedCount
+            page.after = nextCursor
+            if !filtered.posts.isEmpty {
+                page.cards = makeCards(from: filtered.posts, seenIDs: filtered.seenIDs)
+                break
+            }
+            if nextCursor == nil { break }
+        }
+        return page
+    }
+
+    private func applyFilters(to values: [Post]) async -> (posts: [Post], removedCount: Int, seenIDs: Set<String>) {
+        let hideSeen = settings?.hideSeenPosts ?? false
+        // Loaded even when nothing is being hidden, because the cards still
+        // need the seen flag stamped on them for the dimmed styling.
+        let seenIDs = await seenPostIDSet()
 
         let keywordTerms =
             UserDefaults.standard.string(forKey: "filters.keywordTerms")?.split(separator: ",").map {
@@ -1696,7 +1770,7 @@ final class OctonautFeatureStore {
             let instruction = UserDefaults.standard.string(forKey: "filters.semantic.instruction"),
             !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            return (deterministic.visible, deterministic.removedCount)
+            return (deterministic.visible, deterministic.removedCount, seenIDs)
         }
 
         let rule = SemanticRule(
@@ -1707,7 +1781,7 @@ final class OctonautFeatureStore {
         let decisions = await semanticFilter.classify(posts: deterministic.visible, rule: rule)
         let hiddenIDs = Set(decisions.filter(\.shouldHide).map(\.itemID))
         let visible = deterministic.visible.filter { !hiddenIDs.contains($0.id) }
-        return (visible, values.count - visible.count)
+        return (visible, values.count - visible.count, seenIDs)
     }
 
     /// Updates the account used by subsequent reads. Callers should refresh
@@ -1896,20 +1970,63 @@ final class OctonautFeatureStore {
         updateLoadedFeedCache()
     }
 
-    func markSeen(postID: String) {
-        guard let index = posts.firstIndex(where: { $0.id == postID }) else { return }
-        posts[index].isSeen.toggle()
-        if detailPost?.id == postID { detailPost?.isSeen.toggle() }
-        updateLoadedFeedCache()
-        guard let persistence else { return }
-        let isSeen = posts[index].isSeen
-        Task {
-            if isSeen {
-                try? await persistence.markPostSeen(postID, seenAt: .now)
-            } else {
-                try? await persistence.removePostSeen(postID)
+    /// Sets the seen flag outright. Scrolling past a post and "Mark Visible
+    /// Seen" both want a setter, not a flip: the bulk action used to run
+    /// through `markSeen` and so un-marked every post already read.
+    func setSeen(_ isSeen: Bool, postIDs: [String]) {
+        var pending: [String] = []
+        var didMutateCards = false
+        for postID in postIDs {
+            if let index = posts.firstIndex(where: { $0.id == postID }), posts[index].isSeen != isSeen {
+                posts[index].isSeen = isSeen
+                didMutateCards = true
+            }
+            if detailPost?.id == postID, detailPost?.isSeen != isSeen {
+                detailPost?.isSeen = isSeen
+                didMutateCards = true
+            }
+            if seenPostIDs.contains(postID) != isSeen {
+                pending.append(postID)
             }
         }
+        guard didMutateCards || !pending.isEmpty else { return }
+        if isSeen {
+            seenPostIDs.formUnion(pending)
+            postsReadSinceReset += pending.count
+        } else {
+            seenPostIDs.subtract(pending)
+            postsReadSinceReset = max(0, postsReadSinceReset - pending.count)
+        }
+        updateLoadedFeedCache()
+        guard !pending.isEmpty, let persistence else { return }
+        Task {
+            for postID in pending {
+                if isSeen {
+                    try? await persistence.markPostSeen(postID, seenAt: .now)
+                } else {
+                    try? await persistence.removePostSeen(postID)
+                }
+            }
+        }
+    }
+
+    func setSeen(_ isSeen: Bool, postID: String) {
+        setSeen(isSeen, postIDs: [postID])
+    }
+
+    func resetPostsReadTally() {
+        postsReadSinceReset = 0
+    }
+
+    /// Flips the flag, for the explicit "Mark Seen"/"Mark Unseen" actions.
+    /// The detail screen can be showing a post the feed never loaded, so the
+    /// current value comes from whichever copy exists.
+    func markSeen(postID: String) {
+        let current =
+            posts.first(where: { $0.id == postID })?.isSeen
+            ?? detailPost.flatMap { $0.id == postID ? $0.isSeen : nil }
+            ?? seenPostIDs.contains(postID)
+        setSeen(!current, postID: postID)
     }
 
     func recordPostViewed() async {

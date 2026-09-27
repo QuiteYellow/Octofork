@@ -1398,3 +1398,151 @@ final class DomainTests: XCTestCase {
         XCTAssertFalse(coordinator.isAudioOwner(second))
     }
 }
+
+extension DomainTests {
+    private static func listingJSON(ids: [String], after: String?) -> Data {
+        let children = ids.map { id in
+            #"{"kind":"t3","data":{"id":"\#(id)","name":"t3_\#(id)","title":"Post \#(id)","subreddit":"swift","permalink":"/r/swift/comments/\#(id)/title/","author":"reader"}}"#
+        }
+        let afterValue = after.map { "\"\($0)\"" } ?? "null"
+        return Data(#"{"data":{"children":[\#(children.joined(separator: ","))],"after":\#(afterValue)}}"#.utf8)
+    }
+
+    @MainActor
+    private static func settings(hideSeen: Bool) -> SettingsStore {
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "Seen.\(UUID())")!)
+        settings.hideSeenPosts = hideSeen
+        return settings
+    }
+
+    /// A row leaving past the top has been read; one leaving past the bottom
+    /// because the reader scrolled back up has not.
+    @MainActor
+    func testRowVisibilityOnlyReportsRowsThatLeavePastTheTop() {
+        let visibility = FeedRowVisibility()
+        for index in 0...3 { visibility.rowAppeared(index) }
+
+        // Scrolling down: row 0 goes off the top while 1...3 remain.
+        XCTAssertTrue(visibility.rowDisappeared(0))
+
+        // Scrolling back up: row 3 goes off the bottom, and everything still
+        // on screen sits above it.
+        XCTAssertFalse(visibility.rowDisappeared(3))
+
+        // The last row on screen has nothing below it to compare against.
+        XCTAssertFalse(visibility.rowDisappeared(2))
+        XCTAssertFalse(visibility.rowDisappeared(1))
+
+        visibility.rowAppeared(7)
+        visibility.rowAppeared(9)
+        XCTAssertTrue(visibility.rowDisappeared(7))
+    }
+
+    /// `setSeen` is a setter, not a flip. Marking a batch seen used to run
+    /// through the toggling `markSeen` and un-marked everything already read.
+    @MainActor
+    func testMarkingABatchSeenDoesNotUnmarkPostsAlreadySeen() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let persistence = InMemoryPersistenceStore()
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+        await store.refreshPosts(for: .popular)
+        XCTAssertEqual(store.posts.count, 2)
+
+        store.setSeen(true, postID: "a")
+        store.setSeen(true, postIDs: store.posts.map(\.id))
+        XCTAssertEqual(store.posts.filter(\.isSeen).count, 2)
+
+        // markSeen still flips, which is what the explicit menu action wants.
+        store.markSeen(postID: "a")
+        XCTAssertFalse(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
+
+        try await Task.sleep(for: .milliseconds(50))
+        let stored = try await persistence.loadSeenPostIDs()
+        XCTAssertEqual(Set(stored), ["b"])
+    }
+
+    /// Reddit's `hidden` flag is not our seen record, so without stamping the
+    /// local set onto freshly decoded cards the dimming reset every launch.
+    @MainActor
+    func testFreshlyLoadedPostsCarryTheStoredSeenState() async throws {
+        let persistence = InMemoryPersistenceStore()
+        try await persistence.markPostSeen("b")
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+
+        XCTAssertEqual(store.posts.count, 2)
+        XCTAssertFalse(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
+        XCTAssertTrue(try XCTUnwrap(store.posts.first { $0.id == "b" }).isSeen)
+    }
+
+    /// A page that filters away entirely used to end the feed, because the
+    /// row whose appearance asks for the next page never rendered.
+    @MainActor
+    func testAFullyFilteredPageKeepsPagingInsteadOfEndingTheFeed() async throws {
+        let persistence = InMemoryPersistenceStore()
+        for id in ["a", "b"] { try await persistence.markPostSeen(id) }
+        let client = FixtureRedditClient(
+            listingData: Self.listingJSON(ids: ["a", "b"], after: "t3_next"))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+
+        XCTAssertTrue(store.posts.isEmpty)
+        XCTAssertEqual(store.filteredPostCount, 4)
+        // Two attempts: the retry stops once Reddit repeats the cursor.
+        let requests = await client.listingRequests()
+        XCTAssertEqual(requests, 2)
+    }
+
+    /// An empty response is the end of the listing, not a filter wipeout, so
+    /// it must not trigger the retry loop.
+    @MainActor
+    func testAnEmptyResponseIsNotRetried() async {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: [], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true),
+            persistence: InMemoryPersistenceStore())
+
+        await store.refreshPosts(for: .popular)
+
+        XCTAssertTrue(store.posts.isEmpty)
+        let requests = await client.listingRequests()
+        XCTAssertEqual(requests, 1)
+    }
+}
+
+extension DomainTests {
+    /// The accessory's tally counts what has been read since the reader last
+    /// acted on it, and acting on it starts the count again.
+    @MainActor
+    func testPostsReadTallyCountsNewlySeenPostsAndResets() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b", "c"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false),
+            persistence: InMemoryPersistenceStore())
+        await store.refreshPosts(for: .popular)
+        XCTAssertEqual(store.postsReadSinceReset, 0)
+
+        store.setSeen(true, postID: "a")
+        XCTAssertEqual(store.postsReadSinceReset, 1)
+
+        // Re-marking a post already read must not inflate the tally.
+        store.setSeen(true, postIDs: ["a", "b"])
+        XCTAssertEqual(store.postsReadSinceReset, 2)
+
+        // Marking one unread takes it back out of the count.
+        store.setSeen(false, postID: "b")
+        XCTAssertEqual(store.postsReadSinceReset, 1)
+
+        store.resetPostsReadTally()
+        XCTAssertEqual(store.postsReadSinceReset, 0)
+
+        // Clearing the tally does not disturb the seen record itself.
+        XCTAssertTrue(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
+    }
+}

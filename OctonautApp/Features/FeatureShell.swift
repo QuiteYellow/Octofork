@@ -291,13 +291,50 @@ struct OctonautTabsView: View {
             Tab(accountTabTitle(whenSignedOut: "Accounts"), systemImage: "person.crop.circle", value: AppTab.account) {
                 tabContent(for: .account)
             }
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
-                tabContent(for: .search)
-            }
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
                 tabContent(for: .settings)
             }
+            // The search role detaches the tab and pins it to the trailing
+            // end, which is where iOS puts search. It has to be declared last
+            // for the ordering to read correctly in the tab list.
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
+                tabContent(for: .search)
+            }
         }
+        .modifier(
+            FeedAccessoryModifier(
+                descriptor: visibleFeedDescriptor,
+                store: store,
+                isHidingSeen: dependencies.settings.hideSeenPosts,
+                action: toggleHideSeen
+            )
+        )
+        .tabBarMinimizeBehavior(.onScrollDown)
+    }
+
+    /// The feed the accessory acts on, or nil when the reader is not looking
+    /// at one. Home starts as `.feed(.home)`, so an empty path never occurs.
+    private var visibleFeedDescriptor: FeedDescriptorModel? {
+        guard selectedTab == .posts else { return nil }
+        switch postsRouter.path.last {
+        case .feed(let descriptor):
+            return descriptor
+        case .community(let name):
+            return FeedDescriptorModel(kind: .community, name: name)
+        default:
+            return nil
+        }
+    }
+
+    /// Toggling bumps the settings store's filter revision, which invalidates
+    /// the feed cache, so the refresh re-runs the filters rather than serving
+    /// the rows the previous setting produced.
+    private func toggleHideSeen(for descriptor: FeedDescriptorModel) {
+        dependencies.settings.hideSeenPosts.toggle()
+        // The tally counts what has been read since the last time the reader
+        // acted on it, so acting on it starts the count again.
+        store.resetPostsReadTally()
+        Task { await store.refreshPosts(for: descriptor) }
     }
 
     @ViewBuilder

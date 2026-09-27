@@ -278,6 +278,7 @@ struct FeedView: View {
     @State private var crosspostPost: PostCardModel?
     @State private var pendingScrollPoints: CGFloat = 0
     @State private var mediaPreloader = OctonautFeedMediaPreloader()
+    @State private var rowVisibility = FeedRowVisibility()
 
     private let mediaPreloadDistance = 20
 
@@ -342,10 +343,18 @@ struct FeedView: View {
                             .id(post.id)
                             .onAppear {
                                 preloadMedia(after: index)
-                                if dependencies.settings.autoMarkSeenWhileScrolling, !post.isSeen {
-                                    store.markSeen(postID: post.id)
-                                }
                                 if index >= visiblePosts.count - 2 { Task { await store.loadMorePosts(for: descriptor) } }
+                            }
+                            // Viewport visibility, not cell lifecycle.
+                            // `onAppear`/`onDisappear` fire on row recycling,
+                            // which the minimizing tab bar disturbs as it
+                            // changes the scroll view's insets mid-scroll.
+                            .onScrollVisibilityChange { isVisible in
+                                if isVisible {
+                                    rowVisibility.rowAppeared(index)
+                                } else {
+                                    markSeenIfScrolledPast(post, at: index)
+                                }
                             }
                         }
                         if store.feedState == .loading, !visiblePosts.isEmpty {
@@ -399,6 +408,7 @@ struct FeedView: View {
             }
         }
         .task(id: FeedLoadIdentity(descriptor: descriptor, account: store.accountContextKey)) {
+            rowVisibility.reset()
             await store.refreshPosts(for: descriptor)
         }
         .task(id: visiblePosts.map(\.id)) {
@@ -508,6 +518,15 @@ struct FeedView: View {
             Button { router.push(.gallery(descriptor)) } label: {
                 Label("Gallery", systemImage: "square.grid.2x2")
             }
+            Divider()
+            // iPhone also gets this as a tab bar accessory, but the wide and
+            // split layouts have no TabView to hang an accessory on.
+            Toggle(isOn: Binding(
+                get: { dependencies.settings.hideSeenPosts },
+                set: { _ in toggleHideSeen() }
+            )) {
+                Label("Hide Seen", systemImage: "eye.slash")
+            }
         } label: {
             Image(systemName: compactRows ? "list.bullet" : "rectangle.grid.1x2")
         }
@@ -523,9 +542,7 @@ struct FeedView: View {
                     Label("New Post", systemImage: "square.and.pencil")
                 }
             }
-            Button {
-                store.posts.map(\.id).forEach { store.markSeen(postID: $0) }
-            } label: {
+            Button(action: markVisibleSeen) {
                 Label("Mark Visible Seen", systemImage: "eye")
             }
             ShareLink(item: URL(string: "https://www.reddit.com")!) {
@@ -557,11 +574,32 @@ struct FeedView: View {
     }
 
     private func open(_ post: PostCardModel) {
+        store.setSeen(true, postID: post.id)
         if let onSelectPost {
             onSelectPost(post)
         } else {
             router.push(.post(post))
         }
+    }
+
+    /// Marks a post seen once it has scrolled off the top, never on mere
+    /// appearance -- see `FeedRowVisibility` for why the distinction matters.
+    private func markSeenIfScrolledPast(_ post: PostCardModel, at index: Int) {
+        let leftPastTop = rowVisibility.rowDisappeared(index)
+        guard leftPastTop, dependencies.settings.autoMarkSeenWhileScrolling, !post.isSeen else { return }
+        store.setSeen(true, postID: post.id)
+    }
+
+    private func markVisibleSeen() {
+        store.setSeen(true, postIDs: visiblePosts.map(\.id))
+    }
+
+    /// The setting's `didSet` bumps the filter revision, which invalidates
+    /// the feed cache, so the refresh re-runs the filters instead of serving
+    /// the rows the previous setting produced.
+    private func toggleHideSeen() {
+        dependencies.settings.hideSeenPosts.toggle()
+        Task { await store.refreshPosts(for: descriptor) }
     }
 
     private func preloadMedia(after index: Int) {
