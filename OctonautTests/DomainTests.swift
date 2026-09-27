@@ -1361,4 +1361,40 @@ final class DomainTests: XCTestCase {
         let unseen = try XCTUnwrap(URL(string: "https://v.redd.it/unseen/DASH_720.mp4"))
         XCTAssertNil(coordinator.position(for: unseen))
     }
+
+    func testMuxOutcomeReportsOnlyGenuineFailures() {
+        XCTAssertNil(OctonautMuxOutcome.notApplicable.failureReason)
+        XCTAssertNil(OctonautMuxOutcome.merged.failureReason)
+        XCTAssertEqual(
+            OctonautMuxOutcome.videoOnly(reason: "audio URL returned no audio track").failureReason,
+            "audio URL returned no audio track"
+        )
+    }
+
+    @MainActor
+    func testOnlyOneFeedRowOwnsAudioAtATime() throws {
+        let coordinator = OctonautPlaybackCoordinator.shared
+        let first = try XCTUnwrap(URL(string: "https://v.redd.it/first/DASH_720.mp4"))
+        let second = try XCTUnwrap(URL(string: "https://v.redd.it/second/DASH_720.mp4"))
+
+        coordinator.releaseAudio(for: first)
+        coordinator.releaseAudio(for: second)
+        XCTAssertFalse(coordinator.isAudioOwner(first))
+
+        coordinator.claimAudio(for: first)
+        XCTAssertTrue(coordinator.isAudioOwner(first))
+        XCTAssertFalse(coordinator.isAudioOwner(second))
+
+        // Claiming elsewhere silences the previous owner rather than stacking.
+        coordinator.claimAudio(for: second)
+        XCTAssertFalse(coordinator.isAudioOwner(first))
+        XCTAssertTrue(coordinator.isAudioOwner(second))
+
+        // A row that no longer owns audio must not be able to release it.
+        coordinator.releaseAudio(for: first)
+        XCTAssertTrue(coordinator.isAudioOwner(second))
+
+        coordinator.releaseAudio(for: second)
+        XCTAssertFalse(coordinator.isAudioOwner(second))
+    }
 }

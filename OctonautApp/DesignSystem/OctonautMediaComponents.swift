@@ -90,18 +90,57 @@ private actor OctonautMediaSaveCoordinator {
     }
 }
 
+/// Why a player does or does not carry its post's audio.
+///
+/// Reddit serves DASH video and audio as separate files, and every step of
+/// merging them can fail in a way that still produces a playable asset -- just
+/// a silent one. Recording the outcome makes a failed mux distinguishable from
+/// a video that genuinely has no sound.
+enum OctonautMuxOutcome: Equatable, Sendable {
+    /// No separate audio to merge: a GIF, or a self-contained file.
+    case notApplicable
+    case merged
+    case videoOnly(reason: String)
+
+    var failureReason: String? {
+        if case .videoOnly(let reason) = self { return reason }
+        return nil
+    }
+}
+
+/// Without an explicit category the app runs under `soloAmbient`, where the
+/// hardware silent switch mutes playback outright -- so unmuted audio would
+/// still be silent for anyone with their ringer off.
+enum OctonautAudioSession {
+    static func activatePlayback() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+    }
+
+    static func deactivate() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+}
+
 @MainActor
 private enum OctonautAVPlayerFactory {
     fileprivate struct Playback {
         let player: AVPlayer
         let aspectRatio: CGFloat
+        var muxOutcome: OctonautMuxOutcome = .notApplicable
     }
 
     static func makePlayer(videoURL: URL, audioURL: URL?) async -> Playback {
         let videoAsset = AVURLAsset(url: videoURL)
         let aspectRatio = await aspectRatio(for: videoAsset)
         guard let audioURL, audioURL != videoURL else {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .notApplicable
+            )
         }
         let audioAsset = AVURLAsset(url: audioURL)
         let videoTracks: [AVAssetTrack]
@@ -110,34 +149,70 @@ private enum OctonautAVPlayerFactory {
             videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
             audioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
         } catch {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "track load failed: \(error.localizedDescription)")
+            )
         }
         guard let videoTrack = videoTracks.first else {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "asset has no video track")
+            )
         }
 
         let composition = AVMutableComposition()
         guard let duration = try? await videoAsset.load(.duration) else {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "video duration unavailable")
+            )
         }
         do {
             guard let compositionVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+                return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "could not add composition video track")
+            )
             }
             try compositionVideo.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: videoTrack, at: .zero)
             compositionVideo.preferredTransform = try await videoTrack.load(.preferredTransform)
-            if let audioTrack = audioTracks.first,
-               let compositionAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                let loadedAudioDuration = (try? await audioAsset.load(.duration)) ?? duration
-                let audioDuration = CMTimeMinimum(duration, loadedAudioDuration)
-                try compositionAudio.insertTimeRange(CMTimeRange(start: .zero, duration: audioDuration), of: audioTrack, at: .zero)
+
+            // An audio URL that yields no usable track is the quiet failure
+            // worth surfacing: the video plays, just silently.
+            guard let audioTrack = audioTracks.first else {
+                return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "audio URL returned no audio track")
+            )
             }
+            guard let compositionAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "could not add composition audio track")
+            )
+            }
+            let loadedAudioDuration = (try? await audioAsset.load(.duration)) ?? duration
+            let audioDuration = CMTimeMinimum(duration, loadedAudioDuration)
+            try compositionAudio.insertTimeRange(CMTimeRange(start: .zero, duration: audioDuration), of: audioTrack, at: .zero)
+
             return Playback(
                 player: localPlaybackPlayer(item: AVPlayerItem(asset: composition)),
-                aspectRatio: aspectRatio
+                aspectRatio: aspectRatio,
+                muxOutcome: .merged
             )
         } catch {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "composition failed: \(error.localizedDescription)")
+            )
         }
     }
 
@@ -198,6 +273,26 @@ final class OctonautPlaybackCoordinator {
 
     func beginFullScreen() { isFullScreenActive = true }
     func endFullScreen() { isFullScreenActive = false }
+
+    /// Feed rows autoplay muted. Unmuting one claims audio, so two rows
+    /// visible at once can never talk over each other.
+    private(set) var audioOwner: URL?
+
+    func isAudioOwner(_ url: URL) -> Bool { audioOwner == url }
+
+    func claimAudio(for url: URL) {
+        audioOwner = url
+        OctonautAudioSession.activatePlayback()
+    }
+
+    func releaseAudio(for url: URL) {
+        guard audioOwner == url else { return }
+        audioOwner = nil
+        // The viewer runs its own session; do not pull it out from under it.
+        if !isFullScreenActive {
+            OctonautAudioSession.deactivate()
+        }
+    }
 }
 
 /// Warms the small media window immediately around the visible feed rows.
@@ -366,6 +461,32 @@ struct OctonautAsyncImage: View {
     }
 }
 
+/// Debug-build warning that a post's audio failed to merge. Reddit's DASH
+/// audio is a separate file, and when merging it falls through one of the
+/// fallback paths the video still plays -- silently. Without this, that is
+/// indistinguishable from a post that simply has no sound.
+///
+/// Release builds render nothing; the whole body is compiled out.
+struct OctonautMuxWarningBadge: View {
+    let outcome: OctonautMuxOutcome
+
+    var body: some View {
+#if DEBUG
+        if let reason = outcome.failureReason {
+            Label(reason, systemImage: "speaker.slash.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.yellow.opacity(0.92), in: RoundedRectangle(cornerRadius: 7))
+                .padding(7)
+                .allowsHitTesting(false)
+                .accessibilityLabel("Debug: audio mux failed. \(reason)")
+        }
+#endif
+    }
+}
+
 struct OctonautInlineMediaView: View {
     @Environment(AppDependencies.self) private var dependencies
     let post: PostCardModel
@@ -375,6 +496,7 @@ struct OctonautInlineMediaView: View {
     @State private var isRevealed = false
     @State private var isVisibleInFeed = false
     @State private var networkStatus = OctonautNetworkStatus.shared
+    @State private var coordinator = OctonautPlaybackCoordinator.shared
 
     private let gallerySpacing: CGFloat = 4
     private let galleryHeight: CGFloat = 220
@@ -411,6 +533,7 @@ struct OctonautInlineMediaView: View {
                             preloader: preloader
                         )
                         .overlay { openVideoButton }
+                        .overlay(alignment: .bottomTrailing) { feedMuteButton }
                     }
                 }
             } else if post.mediaKind == "embeddedVideo", let url = post.mediaURL,
@@ -554,6 +677,31 @@ struct OctonautInlineMediaView: View {
             .accessibilityLabel("Sensitive media. Tap to reveal.")
     }
 
+    /// Layered above `openVideoButton`, which covers the whole frame, so its
+    /// own taps are not swallowed by the open-full-screen action.
+    @ViewBuilder
+    private var feedMuteButton: some View {
+        if post.mediaKind == "video", let url = post.mediaURL {
+            let isAudible = coordinator.isAudioOwner(url)
+            Button {
+                if isAudible {
+                    coordinator.releaseAudio(for: url)
+                } else {
+                    coordinator.claimAudio(for: url)
+                }
+            } label: {
+                Image(systemName: isAudible ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(9)
+                    .background(.black.opacity(0.58), in: Circle())
+                    .padding(9)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isAudible ? "Mute video" : "Unmute video")
+        }
+    }
+
     private var openVideoButton: some View {
         Button { openOrReveal(at: 0) } label: {
             Color.clear
@@ -638,11 +786,15 @@ struct OctonautVideoPlayer: View {
     @State private var playbackRequested = false
     @State private var looper = OctonautVideoLooper()
     @State private var positionObserver: Any?
+    @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
 
     private var coordinator: OctonautPlaybackCoordinator { .shared }
 
     /// The viewer takes over playback while it is open.
     private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
+
+    /// `muted` is the caller's default; a row that has claimed audio overrides it.
+    private var effectiveMuted: Bool { muted && !coordinator.isAudioOwner(url) }
 
     private var playbackRequest: PlaybackRequest {
         PlaybackRequest(url: url, audioURL: audioURL)
@@ -654,6 +806,9 @@ struct OctonautVideoPlayer: View {
                 OctonautSystemIsolatedVideoPlayer(player: player, showsPlaybackControls: false)
                     .background(.black)
                     .aspectRatio(aspectRatio, contentMode: .fit)
+                    .overlay(alignment: .topLeading) {
+                        OctonautMuxWarningBadge(outcome: muxOutcome)
+                    }
             } else {
                 ZStack {
                     Color.black
@@ -674,7 +829,8 @@ struct OctonautVideoPlayer: View {
                 playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
             }
             guard !Task.isCancelled else { return }
-            playback.player.isMuted = muted
+            playback.player.isMuted = effectiveMuted
+            muxOutcome = playback.muxOutcome
             aspectRatio = playback.aspectRatio
             if loops {
                 looper.attach(to: playback.player)
@@ -684,6 +840,9 @@ struct OctonautVideoPlayer: View {
             if playbackRequested {
                 playback.player.play()
             }
+        }
+        .onChange(of: effectiveMuted) { _, isNowMuted in
+            player?.isMuted = isNowMuted
         }
         .onChange(of: shouldPlay) { _, shouldAutoplay in
             playbackRequested = shouldAutoplay
@@ -707,6 +866,7 @@ struct OctonautVideoPlayer: View {
         }
         .onDisappear {
             playbackRequested = false
+            coordinator.releaseAudio(for: url)
             if let player {
                 coordinator.record(player.currentTime().seconds, for: url)
             }
@@ -1459,6 +1619,7 @@ struct OctonautVideoDetailView: View {
     @State private var player: AVPlayer?
     @State private var looper = OctonautVideoLooper()
     @State private var positionObserver: Any?
+    @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
 
     private var coordinator: OctonautPlaybackCoordinator { .shared }
 
@@ -1471,6 +1632,9 @@ struct OctonautVideoDetailView: View {
                     showsPlaybackControls: showsSystemControls
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    OctonautMuxWarningBadge(outcome: muxOutcome)
+                }
             } else {
                 ProgressView()
                     .tint(.white)
@@ -1482,6 +1646,7 @@ struct OctonautVideoDetailView: View {
             let playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
             guard !Task.isCancelled else { return }
             playback.player.isMuted = startsMuted
+            muxOutcome = playback.muxOutcome
 
             // The factory builds deliberately isolated players so feed rows
             // cannot hijack a system AirPlay session. Here the viewer is front
@@ -1489,7 +1654,7 @@ struct OctonautVideoDetailView: View {
             playback.player.allowsExternalPlayback = true
 
             if !startsMuted {
-                activatePlaybackAudioSession()
+                OctonautAudioSession.activatePlayback()
             }
             if loops {
                 looper.attach(to: playback.player)
@@ -1520,7 +1685,7 @@ struct OctonautVideoDetailView: View {
             looper.detach()
             onPlayerChange?(nil)
             coordinator.endFullScreen()
-            deactivatePlaybackAudioSession()
+            OctonautAudioSession.deactivate()
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video player")
@@ -1547,19 +1712,6 @@ struct OctonautVideoDetailView: View {
         positionObserver = nil
     }
 
-    /// Without an explicit category the app runs under `soloAmbient`, where the
-    /// hardware silent switch mutes playback entirely -- so an unmuted video
-    /// would still be silent for anyone with their ringer off.
-    private func activatePlaybackAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .moviePlayback)
-        try? session.setActive(true)
-    }
-
-    private func deactivatePlaybackAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setActive(false, options: [.notifyOthersOnDeactivation])
-    }
 }
 
 private extension Collection {
