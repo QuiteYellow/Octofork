@@ -35,6 +35,29 @@ enum PostSort: Hashable, Codable, Sendable {
         default: self = .unknown(rawValue)
         }
     }
+
+    /// The sorts a feed control offers. `unknown` keeps `PostSort` from being
+    /// `CaseIterable`, and `default` asks Reddit for its own choice rather
+    /// than naming a sort a person would recognise in a menu.
+    static let selectable: [PostSort] = [.best, .hot, .new, .top, .rising, .controversial]
+
+    /// `true` when Reddit accepts a time range alongside this sort.
+    var acceptsTopTime: Bool {
+        self == .top || self == .controversial
+    }
+
+    var title: String {
+        switch self {
+        case .default: return "Default"
+        case .best: return "Best"
+        case .hot: return "Hot"
+        case .new: return "New"
+        case .top: return "Top"
+        case .rising: return "Rising"
+        case .controversial: return "Controversial"
+        case .unknown(let value): return value.capitalized
+        }
+    }
 }
 
 enum CommentSort: Hashable, Codable, Sendable {
@@ -78,6 +101,17 @@ enum TopTime: String, Codable, Hashable, Sendable, CaseIterable {
     case month
     case year
     case all
+
+    var title: String {
+        switch self {
+        case .hour: return "Past Hour"
+        case .day: return "Today"
+        case .week: return "This Week"
+        case .month: return "This Month"
+        case .year: return "This Year"
+        case .all: return "All Time"
+        }
+    }
 }
 
 enum UserSection: String, Codable, Hashable, Sendable, CaseIterable {

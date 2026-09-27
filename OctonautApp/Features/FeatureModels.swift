@@ -679,7 +679,6 @@ struct FeedDescriptorModel: Hashable, Sendable {
     enum Kind: String, Hashable, Sendable { case home, popular, all, community, multireddit, custom }
     var kind: Kind
     var name: String
-    var sort: String = "Best"
     var customFeedID: UUID? = nil
     var communities: [String] = []
 
@@ -858,6 +857,15 @@ final class OctonautFeatureStore {
         let storedAt: Date
     }
 
+    /// A feed's rows depend on the selected sort as much as on the feed
+    /// itself, so the sort belongs in the cache key. Keying on the descriptor
+    /// alone served Top rows to a reader who had since switched to New.
+    private struct FeedCacheKey: Hashable {
+        let descriptor: FeedDescriptorModel
+        let sort: PostSort
+        let topTime: TopTime?
+    }
+
     @ObservationIgnored private let reddit: (any RedditClient)?
     @ObservationIgnored private let authenticated: (any AuthenticatedRedditService)?
     @ObservationIgnored private let intelligence: (any IntelligenceService)?
@@ -873,7 +881,7 @@ final class OctonautFeatureStore {
     @ObservationIgnored private var feedRequestID = UUID()
     @ObservationIgnored private var detailRequestID = UUID()
     @ObservationIgnored private var loadedFeed: FeedDescriptorModel?
-    @ObservationIgnored private var feedCache: [FeedDescriptorModel: FeedCacheEntry] = [:]
+    @ObservationIgnored private var feedCache: [FeedCacheKey: FeedCacheEntry] = [:]
     @ObservationIgnored private let feedCacheFreshness: TimeInterval = 15 * 60
     @ObservationIgnored private var communitiesRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var communitiesRefreshID: UUID?
@@ -929,7 +937,8 @@ final class OctonautFeatureStore {
     var communitiesState: OctonautLoadState = .loaded
     var inboxState: OctonautLoadState = .loaded
     var searchText = ""
-    var selectedSort = "Best"
+    var selectedSort: PostSort = .best
+    var selectedTopTime: TopTime = .day
     var detailState: OctonautLoadState = .idle
     var detailPost: PostCardModel?
     var moreLoadingIDs: Set<String> = []
@@ -969,6 +978,12 @@ final class OctonautFeatureStore {
         self.settings = settings
         self.persistence = persistence
         self.semanticFilter = intelligence.map(SemanticFilterEngine.init(service:))
+        if let settings {
+            // `default` asks Reddit for its own order, which the sort control
+            // has no row for. Best is the row it lands on.
+            selectedSort = settings.defaultPostSort == .default ? .best : settings.defaultPostSort
+            selectedTopTime = settings.defaultTopTime
+        }
         if reddit != nil {
             // Live stores start empty. Sample rows are reserved for previews.
             if domainPosts.isEmpty { posts = [] }
@@ -1075,9 +1090,10 @@ final class OctonautFeatureStore {
         let requestID = UUID()
         feedRequestID = requestID
         let filterRevision = Int(settings?.filterRevision ?? 0)
+        let cacheKey = feedCacheKey(for: descriptor)
         var hasWarmContent = loadedFeed == descriptor && !posts.isEmpty
         if !forceRefresh,
-           let cached = feedCache[descriptor],
+           let cached = feedCache[cacheKey],
            cached.filterRevision == filterRevision {
             posts = cached.posts
             filteredPostCount = cached.filteredPostCount
@@ -1126,7 +1142,7 @@ final class OctonautFeatureStore {
             nextPage = listing.after
             loadedFeed = descriptor
             feedState = posts.isEmpty ? .empty : .loaded
-            feedCache[descriptor] = FeedCacheEntry(
+            feedCache[cacheKey] = FeedCacheEntry(
                 posts: posts,
                 filteredPostCount: filteredPostCount,
                 nextPage: nextPage,
@@ -1572,7 +1588,7 @@ final class OctonautFeatureStore {
             filteredPostCount += filtered.removedCount
             self.nextPage = listing.after == nextPage ? nil : listing.after
             feedState = posts.isEmpty ? .empty : .loaded
-            feedCache[descriptor] = FeedCacheEntry(
+            feedCache[feedCacheKey(for: descriptor)] = FeedCacheEntry(
                 posts: posts,
                 filteredPostCount: filteredPostCount,
                 nextPage: self.nextPage,
@@ -1658,10 +1674,50 @@ final class OctonautFeatureStore {
         case .community: destination = .community(descriptor.name)
         case .multireddit: destination = .url(URL(string: "https://www.reddit.com")!)
         }
-        let sort = PostSort(rawValue: selectedSort.lowercased())
+        let sort = effectiveSort(for: descriptor)
         return FeedDescriptor(
             destination: destination,
-            sort: descriptor.kind == .custom && sort == .best ? .hot : sort)
+            sort: sort,
+            topTime: sort.acceptsTopTime ? selectedTopTime : nil
+        )
+    }
+
+    /// The sort a feed actually reads with. A combined feed has no Best route
+    /// on Reddit, so Best falls back to Hot there; the sort control reads this
+    /// too, so the checkmark never claims a sort the request did not use.
+    func effectiveSort(for descriptor: FeedDescriptorModel) -> PostSort {
+        descriptor.kind == .custom && selectedSort == .best ? .hot : selectedSort
+    }
+
+    /// Reddit only honours a time range on Top and Controversial.
+    var effectiveTopTime: TopTime? {
+        selectedSort.acceptsTopTime ? selectedTopTime : nil
+    }
+
+    private func feedCacheKey(for descriptor: FeedDescriptorModel) -> FeedCacheKey {
+        let sort = effectiveSort(for: descriptor)
+        return FeedCacheKey(
+            descriptor: descriptor,
+            sort: sort,
+            topTime: sort.acceptsTopTime ? selectedTopTime : nil
+        )
+    }
+
+    /// Applies a sort chosen from the feed control. The visible rows are
+    /// dropped first so a list can never show two sorts at once, then the
+    /// reload runs through the cache: flipping back to a sort read moments
+    /// ago is instant.
+    func applySort(_ sort: PostSort, topTime: TopTime? = nil, for descriptor: FeedDescriptorModel) async {
+        let resolvedTopTime = topTime ?? selectedTopTime
+        guard selectedSort != sort || (sort.acceptsTopTime && selectedTopTime != resolvedTopTime) else { return }
+        selectedSort = sort
+        selectedTopTime = resolvedTopTime
+        posts = []
+        nextPage = nil
+        filteredPostCount = 0
+        loadedFeed = nil
+        feedState = .loading
+        await refreshPosts(for: descriptor)
     }
 
     func vote(postID: String, value: Int) {
@@ -1792,12 +1848,13 @@ final class OctonautFeatureStore {
 
     private func updateLoadedFeedCache() {
         guard let loadedFeed else { return }
-        feedCache[loadedFeed] = FeedCacheEntry(
+        let key = feedCacheKey(for: loadedFeed)
+        feedCache[key] = FeedCacheEntry(
             posts: posts,
             filteredPostCount: filteredPostCount,
             nextPage: nextPage,
             filterRevision: Int(settings?.filterRevision ?? 0),
-            storedAt: feedCache[loadedFeed]?.storedAt ?? .now
+            storedAt: feedCache[key]?.storedAt ?? .now
         )
     }
 
