@@ -1611,6 +1611,22 @@ extension DomainTests {
 }
 
 extension DomainTests {
+    /// Discover used to send this anonymously -- the only call in the client
+    /// that did. Reddit answers an anonymous request for the listing with a
+    /// 403 and an HTML block page, so the tab failed for a signed-in reader
+    /// whose feed was loading fine.
+    @MainActor
+    func testTrendingCommunitiesCarriesTheSignedInAccount() async {
+        let client = FixtureRedditClient()
+        let account = AccountID(string: "t2_example")
+        let model = SearchFeatureModel(reddit: client, accountID: account)
+
+        await model.loadTrendingCommunities()
+
+        let used = await client.lastTrendingCommunitiesAccount()
+        XCTAssertEqual(used, account)
+    }
+
     /// The accessory's tally counts what has been read since the reader last
     /// acted on it, and acting on it starts the count again.
     @MainActor
