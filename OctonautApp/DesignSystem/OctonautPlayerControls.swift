@@ -55,6 +55,8 @@ struct OctonautPlayerControls: View {
     @State private var duration: Double
     @State private var isScrubbing = false
     @State private var scrubValue: Double = 0
+    @State private var lastPreviewSeekAt: TimeInterval = 0
+    @State private var scrubGeneration = 0
     /// Measured from the track itself so the fill and thumb use the track
     /// width rather than the full bar width including the time labels.
     @State private var trackWidth: CGFloat = 1
@@ -259,18 +261,36 @@ struct OctonautPlayerControls: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         isScrubbing = true
+                        scrubGeneration &+= 1
                         let ratio = value.location.x / trackWidth
                         scrubValue = min(max(ratio, 0), 1) * duration
+                        // Preview the video during the drag. Limit seeks so a
+                        // fast finger does not queue a request for every touch
+                        // event, then use an exact seek on release.
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if now - lastPreviewSeekAt >= 0.08 {
+                            lastPreviewSeekAt = now
+                            let previewTolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
+                            player.seek(
+                                to: CMTime(seconds: scrubValue, preferredTimescale: 600),
+                                toleranceBefore: previewTolerance,
+                                toleranceAfter: previewTolerance
+                            )
+                        }
                         onInteraction()
                     }
                     .onEnded { _ in
                         let target = scrubValue
+                        let generation = scrubGeneration
+                        lastPreviewSeekAt = 0
+                        player.currentItem?.cancelPendingSeeks()
                         player.seek(
                             to: CMTime(seconds: target, preferredTimescale: 600),
                             toleranceBefore: .zero,
                             toleranceAfter: .zero
                         ) { _ in
                             Task { @MainActor in
+                                guard scrubGeneration == generation else { return }
                                 currentTime = target
                                 isScrubbing = false
                             }
