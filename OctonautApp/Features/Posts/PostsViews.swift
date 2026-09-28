@@ -373,6 +373,11 @@ struct FeedView: View {
                         geometry.contentOffset.y + geometry.contentInsets.top
                     } action: { oldOffset, newOffset in
                         scrollTracker.updateOffset(fromTop: newOffset)
+                        // Recompute here too, not only on a visibility
+                        // change. Returning from a pushed post restores the
+                        // same offsets, so no row crosses the threshold and a
+                        // visibility-only trigger never fires again.
+                        markPostsScrolledPast()
                         pendingScrollPoints += abs(newOffset - oldOffset)
                         guard pendingScrollPoints >= 100 else { return }
                         let points = Int(pendingScrollPoints.rounded())
@@ -587,7 +592,7 @@ struct FeedView: View {
         guard dependencies.settings.autoMarkSeenWhileScrolling else { return }
         let read = FeedScrollReadRule.postsScrolledPast(
             in: visiblePosts,
-            visibleIDs: scrollTracker.visibleIDs,
+            visibleIDs: scrollTracker.effectiveVisibleIDs,
             isScrolledFromTop: scrollTracker.isScrolledFromTop
         )
         guard !read.isEmpty else { return }

@@ -1601,3 +1601,58 @@ extension DomainTests {
         XCTAssertTrue(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
     }
 }
+
+extension DomainTests {
+    /// Pushing a post detail covers the feed, so every row reports
+    /// not-visible without the reader scrolling. Popping back restores the
+    /// same offsets, so no row crosses the threshold again -- the tracker has
+    /// to answer from the set it held before the push, or marking stays dead
+    /// for as long as the reader stays on that screenful.
+    @MainActor
+    func testReturningFromAPushedPostStillMarksPostsScrolledPast() {
+        let tracker = FeedScrollTracker()
+        tracker.updateOffset(fromTop: 900)
+        for id in ["p2", "p3", "p4"] { tracker.setVisibility(true, id: id) }
+        XCTAssertEqual(tracker.effectiveVisibleIDs, ["p2", "p3", "p4"])
+
+        // The push: every row reports not-visible, no scrolling involved.
+        for id in ["p2", "p3", "p4"] { tracker.setVisibility(false, id: id) }
+        XCTAssertTrue(tracker.visibleIDs.isEmpty)
+        XCTAssertEqual(tracker.effectiveVisibleIDs, ["p2", "p3", "p4"])
+
+        let posts = (0..<6).map { Self.unseenPost(id: "p\($0)") }
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: posts, visibleIDs: tracker.effectiveVisibleIDs,
+                isScrolledFromTop: tracker.isScrolledFromTop),
+            ["p0", "p1"])
+
+        // A real visibility report replaces the fallback rather than adding
+        // to it, so scrolling on from here is still decided positionally.
+        tracker.setVisibility(true, id: "p5")
+        XCTAssertEqual(tracker.effectiveVisibleIDs, ["p5"])
+
+        // Resetting for a new feed must not leave the old feed's rows behind.
+        tracker.reset()
+        XCTAssertTrue(tracker.effectiveVisibleIDs.isEmpty)
+        XCTAssertFalse(tracker.isScrolledFromTop)
+    }
+}
+
+extension DomainTests {
+    /// `PostCardModel.id` is a `let`, so a distinct id means the memberwise
+    /// initializer rather than mutating a copy of `.sample`.
+    static func unseenPost(id: String) -> PostCardModel {
+        let post = PostCardModel.sample
+        return PostCardModel(
+            id: id, community: post.community, author: post.author,
+            authorFlair: post.authorFlair, title: post.title, body: post.body,
+            flair: post.flair, score: post.score, comments: post.comments,
+            age: post.age, vote: post.vote, isSaved: post.isSaved, isSeen: false,
+            isNSFW: post.isNSFW, isSpoiler: post.isSpoiler, isSticky: post.isSticky,
+            isVideo: post.isVideo, hasMedia: post.hasMedia, mediaTitle: post.mediaTitle,
+            shareURL: post.shareURL, mediaURL: post.mediaURL,
+            thumbnailURL: post.thumbnailURL, mediaKind: post.mediaKind,
+            galleryURLs: post.galleryURLs, audioURL: post.audioURL)
+    }
+}
