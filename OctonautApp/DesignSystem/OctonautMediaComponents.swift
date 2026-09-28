@@ -790,7 +790,7 @@ struct OctonautInlineMediaView: View {
                         Image(systemName: "safari").font(.title2)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Open unsupported media").font(.subheadline.weight(.semibold))
-                            Text((post.mediaURL ?? post.shareURL).host ?? "Reddit")
+                            Text(LinkHostName.display(for: post.mediaURL ?? post.shareURL))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -858,21 +858,23 @@ struct OctonautInlineMediaView: View {
                     if isBlurred { sensitiveOverlay }
                 }
             }
+            // One line: the host is the only thing here that says anything.
+            // The line above it read "Link", which is `mediaTitle` -- the
+            // media kind, capitalised -- so it told the reader what the link
+            // icon already had, and cost the card a whole row of height.
             HStack(spacing: 10) {
-                Image(systemName: "link.circle.fill").font(.title2)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(post.mediaTitle.isEmpty ? "Open link" : post.mediaTitle)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(2)
-                    Text(url.host ?? url.absoluteString)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
+                Image(systemName: "link.circle.fill").font(.title3)
+                Text(LinkHostName.display(for: url))
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
                 Image(systemName: isBlurred ? "eye" : "arrow.up.right")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            .padding(13)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 9))
