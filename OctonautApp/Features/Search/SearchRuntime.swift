@@ -27,22 +27,47 @@ final class SearchFeatureModel {
     var activeQuery = ""
     var paginationError: String?
 
-    init(reddit: any RedditClient) {
+    /// The signed-in account, kept current by the view.
+    ///
+    /// Search used to send every request anonymously. Reddit answers an
+    /// anonymous request for these listings with a 403 and an HTML block
+    /// page, so Discover and every search scope failed for a reader who was
+    /// signed in and whose feed was loading perfectly well.
+    @ObservationIgnored var accountID: AccountID?
+
+    init(reddit: any RedditClient, accountID: AccountID? = nil) {
         self.reddit = reddit
+        self.accountID = accountID
     }
 
     func loadTrendingCommunities(forceRefresh: Bool = false) async {
         if !forceRefresh, trendingState == .loading || trendingState == .loaded { return }
         trendingState = .loading
         do {
-            let listing = try await reddit.trendingCommunities(limit: 25)
+            let listing = try await reddit.trendingCommunities(
+                limit: 25,
+                account: accountID,
+                // A reader-initiated retry bypasses both the response cache
+                // and the client's anonymous back-off: they are watching, and
+                // the block it is waiting out may already have lifted.
+                responseCachePolicy: forceRefresh ? .reloadIgnoringCache : .useCache
+            )
             guard !Task.isCancelled else { return }
             trendingCommunities = listing.items.map(CommunityCardModel.init)
+            paginationError = nil
             trendingState = trendingCommunities.isEmpty ? .empty : .loaded
         } catch is CancellationError {
             trendingState = trendingCommunities.isEmpty ? .idle : .loaded
             return
         } catch {
+            // A list already on screen is better than an error where the list
+            // was. The failure still reaches the reader through the retry
+            // affordance, without throwing away what they were reading.
+            guard trendingCommunities.isEmpty else {
+                trendingState = .loaded
+                paginationError = error.localizedDescription
+                return
+            }
             trendingState = .failed(error.localizedDescription)
         }
     }
@@ -67,7 +92,7 @@ final class SearchFeatureModel {
         do {
             switch scope {
             case .posts:
-                let listing = try await reddit.search(RedditSearchRequest(query: query, sort: .hot), account: nil)
+                let listing = try await reddit.search(RedditSearchRequest(query: query, sort: .hot), account: accountID)
                 guard generation == requestGeneration else { return }
                 paginationError = nil
                 posts = listing.items.map(PostCardModel.init)
@@ -76,7 +101,7 @@ final class SearchFeatureModel {
                 users = []
                 state = posts.isEmpty ? .empty : .loaded
             case .communities:
-                let listing = try await reddit.communities(RedditCommunitySearchRequest(query: query), account: nil)
+                let listing = try await reddit.communities(RedditCommunitySearchRequest(query: query), account: accountID)
                 guard generation == requestGeneration else { return }
                 paginationError = nil
                 communities = listing.items.map(CommunityCardModel.init)
@@ -85,7 +110,7 @@ final class SearchFeatureModel {
                 users = []
                 state = communities.isEmpty ? .empty : .loaded
             case .users:
-                let listing = try await reddit.users(RedditUserSearchRequest(query: query), account: nil)
+                let listing = try await reddit.users(RedditUserSearchRequest(query: query), account: accountID)
                 guard generation == requestGeneration else { return }
                 paginationError = nil
                 posts = []
@@ -110,7 +135,7 @@ final class SearchFeatureModel {
                 guard let postsAfter else { return }
                 let listing = try await reddit.search(
                     RedditSearchRequest(query: activeQuery, sort: .hot, after: postsAfter),
-                    account: nil
+                    account: accountID
                 )
                 guard generation == requestGeneration else { return }
                 let existing = Set(posts.map(\.id))
@@ -120,7 +145,7 @@ final class SearchFeatureModel {
                 guard let communitiesAfter else { return }
                 let listing = try await reddit.communities(
                     RedditCommunitySearchRequest(query: activeQuery, after: communitiesAfter),
-                    account: nil
+                    account: accountID
                 )
                 guard generation == requestGeneration else { return }
                 let existing = Set(communities.map(\.id))

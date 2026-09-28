@@ -28,22 +28,23 @@ enum KeywordFilterField: String, CaseIterable, Hashable, Sendable {
     case linkDescription
 }
 
+/// Rules that decide what a fetched page contains.
+///
+/// Seen posts are deliberately not among them. Whether a post the reader has
+/// finished with is shown is a property of the view, not of the page -- it
+/// changes with a toggle, and hiding it on the way in made the feed's
+/// contents depend on when a post was marked relative to when its page was
+/// fetched. `OctonautFeatureStore.visiblePosts` is the one place that decides.
 struct DeterministicFilterConfiguration: Sendable, Hashable {
     var blockedCommunities: Set<String>
     var keywordRules: [KeywordFilterRule]
-    var seenPostIDs: Set<String>
-    var hideSeen: Bool
 
     init(
         blockedCommunities: Set<String> = [],
-        keywordRules: [KeywordFilterRule] = [],
-        seenPostIDs: Set<String> = [],
-        hideSeen: Bool = false
+        keywordRules: [KeywordFilterRule] = []
     ) {
         self.blockedCommunities = Set(blockedCommunities.map(IDNormalization.community))
         self.keywordRules = keywordRules
-        self.seenPostIDs = seenPostIDs
-        self.hideSeen = hideSeen
     }
 }
 
@@ -61,10 +62,6 @@ enum DeterministicPostFilter {
             let community = IDNormalization.community(post.community.name)
             if configuration.blockedCommunities.contains(community) {
                 reasons["Community"] = (reasons["Community"] ?? 0) + 1
-                continue
-            }
-            if configuration.hideSeen && configuration.seenPostIDs.contains(post.id) {
-                reasons["Seen"] = (reasons["Seen"] ?? 0) + 1
                 continue
             }
             if configuration.keywordRules.contains(where: { matches(post, rule: $0) }) {

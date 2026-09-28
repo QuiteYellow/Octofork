@@ -46,6 +46,8 @@ struct PostDetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 OctonautPostRow(
                     post: currentPost,
+                    // Never dimmed: this is the post the reader is reading,
+                    // not a row in a list they are scanning past.
                     bodyLineLimit: nil,
                     showsFlair: dependencies.settings.showPostFlair,
                     onVote: { performVote(postID: currentPost.id, value: $0) },
@@ -178,7 +180,7 @@ struct PostDetailView: View {
                     Button {
                         store.markSeen(postID: currentPost.id)
                     } label: {
-                        Label(currentPost.isSeen ? "Mark Unseen" : "Mark Seen", systemImage: "eye")
+                        Label(store.isSeen(currentPost.id) ? "Mark Unseen" : "Mark Seen", systemImage: "eye")
                     }
                     if currentPost.hasMedia {
                         Button {

@@ -12,13 +12,14 @@ import SwiftUI
 @MainActor
 struct FeedAccessoryModifier: ViewModifier {
     let descriptor: FeedDescriptorModel?
+    /// The reader's "Show hide read posts bar" setting.
+    let isEnabled: Bool
     let store: OctonautFeatureStore
-    let isHidingSeen: Bool
     let action: (FeedDescriptorModel) -> Void
 
     func body(content: Content) -> some View {
         if #available(iOS 26.1, *) {
-            content.tabViewBottomAccessory(isEnabled: descriptor != nil) {
+            content.tabViewBottomAccessory(isEnabled: isEnabled && descriptor != nil) {
                 accessory
             }
         } else {
@@ -30,10 +31,9 @@ struct FeedAccessoryModifier: ViewModifier {
 
     @ViewBuilder
     private var accessory: some View {
-        if let descriptor {
+        if isEnabled, let descriptor {
             FeedSeenFilterAccessory(
                 store: store,
-                isHidingSeen: isHidingSeen,
                 action: { action(descriptor) }
             )
         }

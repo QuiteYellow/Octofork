@@ -54,6 +54,12 @@ final class SeenPostRecord {
     var firstSeenAt: Date
     var lastSeenAt: Date
     var source: String
+    /// When the reader cleared this post out of the feed, if they did.
+    ///
+    /// Distinct from being read: reading a post dims it, clearing takes it
+    /// away, and taking it away is meant to last. Optional so the store
+    /// migrates in place for anyone who already has a record.
+    var clearedAt: Date?
 
     init(postID: String, seenAt: Date = .now, source: String = "detail") {
         self.postID = postID

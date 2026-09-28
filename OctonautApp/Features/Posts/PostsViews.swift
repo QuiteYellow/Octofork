@@ -279,6 +279,7 @@ struct FeedView: View {
     @State private var pendingScrollPoints: CGFloat = 0
     @State private var mediaPreloader = OctonautFeedMediaPreloader()
     @State private var scrollTracker = FeedScrollTracker()
+    @State private var markScheduler = FeedSeenMarkScheduler()
 
     private let mediaPreloadDistance = 20
 
@@ -290,9 +291,9 @@ struct FeedView: View {
     private var visiblePosts: [PostCardModel] {
         switch descriptor.kind {
         case .community:
-            return store.posts.filter { $0.community.caseInsensitiveCompare(descriptor.name) == .orderedSame }
+            return store.visiblePosts.filter { $0.community.caseInsensitiveCompare(descriptor.name) == .orderedSame }
         default:
-            return store.posts
+            return store.visiblePosts
         }
     }
 
@@ -312,10 +313,11 @@ struct FeedView: View {
                         ForEach(Array(visiblePosts.enumerated()), id: \.element.id) { index, post in
                             Group {
                                 if compactRows {
-                                    OctonautCompactPostRow(post: post, thumbnailOnRight: thumbnailOnRight, showsFlair: dependencies.settings.showPostFlair, blursNSFW: dependencies.settings.blurNSFWMedia, blursSpoilers: dependencies.settings.blurSpoilers, onVote: { value in performVote(postID: post.id, value: value) }, onSave: { performSave(postID: post.id) }, onOpen: { open(post) }, onCommunityOpen: { open(post) })
+                                    OctonautCompactPostRow(post: post, isSeen: store.isSeen(post.id), thumbnailOnRight: thumbnailOnRight, showsFlair: dependencies.settings.showPostFlair, blursNSFW: dependencies.settings.blurNSFWMedia, blursSpoilers: dependencies.settings.blurSpoilers, onVote: { value in performVote(postID: post.id, value: value) }, onSave: { performSave(postID: post.id) }, onOpen: { open(post) }, onCommunityOpen: { open(post) })
                                 } else {
                                     OctonautPostRow(
                                         post: post,
+                                        isSeen: store.isSeen(post.id),
                                         showsFlair: dependencies.settings.showPostFlair,
                                         mediaPreloader: mediaPreloader,
                                         mediaMaximumHeight: usesWideInterface ? min(320, max(160, availableHeight * 0.45)) : nil,
@@ -337,19 +339,37 @@ struct FeedView: View {
                                     )
                                 }
                             }
-                            .fixedSize(horizontal: false, vertical: true)
-                            .listRowInsets(EdgeInsets())
-                            .listRowSeparator(.hidden)
-                            .id(post.id)
                             // Viewport visibility, not cell lifecycle: this
                             // fires for the screenful present at first render,
                             // which `onAppear`/`onDisappear` pairs did not, and
                             // is unaffected by the tab bar minimizing mid-scroll.
-                            // 0.6 is FUN-LIST-005's "60 percent of the row".
-                            .onScrollVisibilityChange(threshold: 0.6) { isVisible in
+                            //
+                            // 0.4 is FUN-LIST-005's 60 percent, read as the
+                            // share of the row that has gone. The threshold
+                            // is the fraction that must still be showing for
+                            // a row to count as visible, and the rule marks
+                            // everything above the topmost visible row -- so
+                            // at 0.4 a post is read once less than 40 percent
+                            // of it remains, which is 60 percent of it gone
+                            // off the top.
+                            //
+                            // The two neighbouring values are both wrong for
+                            // this: 0.6 marks a post while nearly half of it
+                            // is still on screen, and a sliver waits until it
+                            // has vanished completely.
+                            //
+                            // Applied inside the row traits. Outside them it
+                            // swallows `listRowInsets` and `listRowSeparator`,
+                            // and the row comes back with the plain style's
+                            // own inset on top of the card's padding.
+                            .onScrollVisibilityChange(threshold: 0.4) { isVisible in
                                 scrollTracker.setVisibility(isVisible, id: post.id)
                                 markPostsScrolledPast()
                             }
+                            .fixedSize(horizontal: false, vertical: true)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .id(post.id)
                             .onAppear {
                                 preloadMedia(after: index)
                                 if index >= visiblePosts.count - 2 { Task { await store.loadMorePosts(for: descriptor) } }
@@ -413,7 +433,9 @@ struct FeedView: View {
         }
         .task(id: FeedLoadIdentity(descriptor: descriptor, account: store.accountContextKey)) {
             scrollTracker.reset()
+            markScheduler.cancelAll()
             await store.refreshPosts(for: descriptor)
+            await store.loadMorePostsUntilSomethingIsVisible(for: descriptor)
         }
         .task(id: visiblePosts.map(\.id)) {
             mediaPreloader.preload(
@@ -523,13 +545,20 @@ struct FeedView: View {
                 Label("Gallery", systemImage: "square.grid.2x2")
             }
             Divider()
-            // iPhone also gets this as a tab bar accessory, but the wide and
-            // split layouts have no TabView to hang an accessory on.
+            // iPhone gets the clearing action as a tab bar accessory, but the
+            // wide and split layouts have no TabView to hang one on.
+            Button(action: clearReadPosts) {
+                Label("Clear Read Posts", systemImage: "eye.slash")
+            }
+            .disabled(!store.hasReadPostsInFeed)
+            // The setting is the standing preference -- read posts are
+            // dropped when the feed next reloads -- and stays a switch
+            // because that is what it is.
             Toggle(isOn: Binding(
                 get: { dependencies.settings.hideSeenPosts },
-                set: { _ in toggleHideSeen() }
+                set: { dependencies.settings.hideSeenPosts = $0 }
             )) {
-                Label("Hide Seen", systemImage: "eye.slash")
+                Label("Hide Read Posts on Refresh", systemImage: "eye.slash.circle")
             }
         } label: {
             Image(systemName: compactRows ? "list.bullet" : "rectangle.grid.1x2")
@@ -547,7 +576,7 @@ struct FeedView: View {
                 }
             }
             Button(action: markVisibleSeen) {
-                Label("Mark Visible Seen", systemImage: "eye")
+                Label("Mark Visible Posts Read", systemImage: "eye")
             }
             ShareLink(item: URL(string: "https://www.reddit.com")!) {
                 Label("Share Feed", systemImage: "square.and.arrow.up")
@@ -589,26 +618,32 @@ struct FeedView: View {
     /// Marks everything above the topmost visible row as read. See
     /// `FeedScrollReadRule` for why this is recomputed rather than tracked.
     private func markPostsScrolledPast() {
-        guard dependencies.settings.autoMarkSeenWhileScrolling else { return }
+        guard dependencies.settings.autoMarkSeenWhileScrolling else {
+            markScheduler.cancelAll()
+            return
+        }
         let read = FeedScrollReadRule.postsScrolledPast(
             in: visiblePosts,
             visibleIDs: scrollTracker.effectiveVisibleIDs,
+            seenIDs: store.seenPostIDs,
             isScrolledFromTop: scrollTracker.isScrolledFromTop
         )
-        guard !read.isEmpty else { return }
-        store.setSeen(true, postIDs: read)
+        // Not marked here: held for a moment, so scrolling back takes it
+        // back. An empty list cancels everything pending, which is what
+        // scrolling to the top means.
+        markScheduler.schedule(read) { store.setSeen(true, postID: $0) }
     }
 
     private func markVisibleSeen() {
-        store.setSeen(true, postIDs: visiblePosts.map(\.id))
+        store.setSeen(true, postIDs: visiblePosts.map(\.id), keepingVisible: false)
     }
 
-    /// The setting's `didSet` bumps the filter revision, which invalidates
-    /// the feed cache, so the refresh re-runs the filters instead of serving
-    /// the rows the previous setting produced.
-    private func toggleHideSeen() {
-        dependencies.settings.hideSeenPosts.toggle()
-        Task { await store.refreshPosts(for: descriptor) }
+    /// The wide and split layouts reach this through the menu rather than the
+    /// tab bar accessory, so it does what the accessory does: take the read
+    /// posts out of the feed, and page on if that leaves nothing to show.
+    private func clearReadPosts() {
+        store.clearReadPostsFromFeed()
+        Task { await store.loadMorePostsUntilSomethingIsVisible(for: descriptor) }
     }
 
     private func preloadMedia(after index: Int) {

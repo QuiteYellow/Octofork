@@ -41,6 +41,7 @@ struct SettingsDetailView: View {
     let router: OctonautFeatureRouter
     @Environment(AppDependencies.self) private var dependencies
     @State private var showingReset = false
+    @State private var showingClearSeenPosts = false
     @State private var showingAppReset = false
     @State private var isResettingApp = false
     @State private var appResetNotice: AppResetNotice?
@@ -78,6 +79,18 @@ struct SettingsDetailView: View {
         }
         .formStyle(.grouped)
         .navigationTitle(destination.title)
+        .confirmationDialog(
+            "Forget all read posts?",
+            isPresented: $showingClearSeenPosts,
+            titleVisibility: .visible
+        ) {
+            Button("Forget All", role: .destructive) {
+                Task { await store.clearSeenPosts() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Every post will count as unread again, in every feed. The record is kept on this device and holds at most 5,000 posts, dropping the oldest first.")
+        }
         .confirmationDialog("Reset statistics?", isPresented: $showingReset, titleVisibility: .visible) {
             Button("Reset Statistics", role: .destructive) {
                 Task { await resetStatistics() }
@@ -166,14 +179,21 @@ struct SettingsDetailView: View {
                 Toggle("Show post flair", isOn: Binding(get: { dependencies.settings.showPostFlair }, set: { dependencies.settings.showPostFlair = $0 }))
                 Toggle("Blur spoilers", isOn: Binding(get: { dependencies.settings.blurSpoilers }, set: { dependencies.settings.blurSpoilers = $0 }))
                 Toggle("Blur NSFW media", isOn: Binding(get: { dependencies.settings.blurNSFWMedia }, set: { dependencies.settings.blurNSFWMedia = $0 }))
-                Toggle("Hide seen posts", isOn: Binding(get: { dependencies.settings.hideSeenPosts }, set: { dependencies.settings.hideSeenPosts = $0 }))
-                Toggle("Mark posts seen while scrolling", isOn: Binding(get: { dependencies.settings.autoMarkSeenWhileScrolling }, set: { dependencies.settings.autoMarkSeenWhileScrolling = $0 }))
                 Toggle("Show filter count", isOn: Binding(get: { dependencies.settings.showFilterCount }, set: { dependencies.settings.showFilterCount = $0 }))
                 Picker("Video autoplay", selection: Binding(get: { dependencies.settings.autoplayVideo }, set: { dependencies.settings.autoplayVideo = $0 })) {
                     Text("Never").tag(AutoplayVideo.never)
                     Text("Wi-Fi").tag(AutoplayVideo.wifi)
                     Text("Always").tag(AutoplayVideo.always)
                 }
+            }
+            Section {
+                Toggle("Mark while scrolling", isOn: Binding(get: { dependencies.settings.autoMarkSeenWhileScrolling }, set: { dependencies.settings.autoMarkSeenWhileScrolling = $0 }))
+                Toggle("Hide on refresh", isOn: Binding(get: { dependencies.settings.hideSeenPosts }, set: { dependencies.settings.hideSeenPosts = $0 }))
+                Toggle("Show bar", isOn: Binding(get: { dependencies.settings.showsReadPostsBar }, set: { dependencies.settings.showsReadPostsBar = $0 }))
+            } header: {
+                Text("Read posts")
+            } footer: {
+                Text("A post is marked read once it scrolls off the top. The bar above the tab bar counts what you have read and clears it out for good. Hide on refresh also drops read posts you have not cleared, next time the feed reloads.")
             }
             Section("Large screens") {
                 Toggle("Use split view", isOn: Binding(
@@ -333,6 +353,36 @@ struct SettingsDetailView: View {
                     fromByteCount: Int64(responseCacheBytes),
                     countStyle: .file
                 ))
+                LabeledContent("Posts marked read", value: store.seenPostCount.formatted())
+                if let seenRecordError = store.seenRecordError {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Read posts could not be saved")
+                                .font(.footnote.weight(.semibold))
+                            Text(seenRecordError)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                if let persistenceFailure = dependencies.persistenceFailure {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Nothing is being saved to this device")
+                                .font(.footnote.weight(.semibold))
+                            Text("Read posts, drafts and statistics will be gone when Octonaut quits. \(persistenceFailure)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                Button("Forget All Read Posts", role: .destructive) { showingClearSeenPosts = true }
                 Button("Clear Network and Media Cache") {
                     RedditResponseCache.removeAll()
                     responseCacheBytes = 0

@@ -20,6 +20,7 @@ actor FixtureRedditClient: RedditClient {
     private var listingRequestCount = 0
     private var postRequestCount = 0
     private var subscribedCommunitiesRequestCount = 0
+    private var trendingCommunitiesAccount: AccountID?
 
     init(
         listingData: Data? = nil,
@@ -129,7 +130,12 @@ actor FixtureRedditClient: RedditClient {
         return try RedditJSONCodec.decodeUserSearch(usersData)
     }
 
-    func trendingCommunities(limit: Int = 25) async throws -> Listing<Community> {
+    func trendingCommunities(
+        limit: Int = 25,
+        account: AccountID? = nil,
+        responseCachePolicy: ListingRequest.ResponseCachePolicy = .useCache
+    ) async throws -> Listing<Community> {
+        trendingCommunitiesAccount = account
         guard let communitiesData else { return Listing(items: []) }
         return try RedditJSONCodec.decodeCommunities(communitiesData)
     }
@@ -145,6 +151,10 @@ actor FixtureRedditClient: RedditClient {
 
     func subscribedCommunitiesRequests() -> Int {
         subscribedCommunitiesRequestCount
+    }
+
+    func lastTrendingCommunitiesAccount() -> AccountID? {
+        trendingCommunitiesAccount
     }
 
     func userProfile(_ username: String, account: AccountID? = nil) async throws -> UserProfile {

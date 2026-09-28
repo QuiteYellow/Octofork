@@ -12,7 +12,12 @@ import SwiftUI
 ///
 /// The tally gives the control a purpose beyond an abstract filter: it reads
 /// as "you have read twelve of these, tap to clear them out", and pressing
-/// the button resets the count to zero.
+/// the button does exactly that.
+///
+/// Deliberately not a toggle. It used to flip the hide-seen setting, so the
+/// second press put back everything the first press had taken away -- while
+/// the label promised the opposite. An action can be pressed repeatedly with
+/// the meaning the tally implies: clear these, read some more, clear those.
 @MainActor
 struct FeedSeenFilterAccessory: View {
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
@@ -21,10 +26,12 @@ struct FeedSeenFilterAccessory: View {
     /// running tally is observed by this view alone. Reading it up in the
     /// app shell made every marked post re-render the whole TabView.
     let store: OctonautFeatureStore
-    let isHidingSeen: Bool
     let action: () -> Void
 
     private var postsRead: Int { store.postsReadSinceReset }
+
+    /// Nothing to clear means nothing to press.
+    private var hasReadPosts: Bool { store.hasReadPostsInFeed }
 
     /// Minimized, the accessory shares the tab bar's own height, so it drops
     /// to the count alone rather than competing with the tab labels.
@@ -47,25 +54,21 @@ struct FeedSeenFilterAccessory: View {
             Spacer(minLength: 0)
 
             Button(action: action) {
-                Label(
-                    isHidingSeen ? "Show read posts" : "Hide read posts",
-                    systemImage: isHidingSeen ? "eye.slash.fill" : "eye"
-                )
-                .labelStyle(.iconOnly)
-                .font(isInline ? .body : .title3)
-                .frame(minWidth: 44, minHeight: isInline ? 28 : 44)
-                .contentShape(.rect)
-                .contentTransition(.symbolEffect(.replace))
+                Label("Clear read posts", systemImage: "eye.slash")
+                    .labelStyle(.iconOnly)
+                    .font(isInline ? .body : .title3)
+                    .frame(minWidth: 44, minHeight: isInline ? 28 : 44)
+                    .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(isHidingSeen ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+            .foregroundStyle(hasReadPosts ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
+            .disabled(!hasReadPosts)
         }
         .padding(.horizontal, 16)
         .animation(.snappy, value: postsRead)
-        .animation(.snappy, value: isHidingSeen)
-        .sensoryFeedback(.selection, trigger: isHidingSeen)
+        .animation(.snappy, value: hasReadPosts)
+        .sensoryFeedback(.success, trigger: postsRead == 0)
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Filters posts you have already scrolled past")
-        .accessibilityAddTraits(isHidingSeen ? .isSelected : [])
+        .accessibilityHint("Removes posts you have already read from this feed")
     }
 }

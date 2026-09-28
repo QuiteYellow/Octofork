@@ -304,19 +304,39 @@ struct OctonautTabsView: View {
         .modifier(
             FeedAccessoryModifier(
                 descriptor: visibleFeedDescriptor,
+                isEnabled: dependencies.settings.showsReadPostsBar,
                 store: store,
-                isHidingSeen: dependencies.settings.hideSeenPosts,
-                action: toggleHideSeen
+                action: clearReadPosts
             )
         )
         .tabBarMinimizeBehavior(.onScrollDown)
     }
 
+    /// The navigation stack the reader is actually looking at.
+    ///
+    /// Every tab can end up showing a feed: Search and Account both push
+    /// `.community`, and those stacks are as much "a feed on screen" as the
+    /// Posts tab's own.
+    private var activeRouter: OctonautFeatureRouter {
+        switch selectedTab {
+        case .posts: postsRouter
+        case .inbox: inboxRouter
+        case .account: accountRouter
+        case .search: searchRouter
+        case .settings: settingsRouter
+        }
+    }
+
     /// The feed the accessory acts on, or nil when the reader is not looking
-    /// at one. Home starts as `.feed(.home)`, so an empty path never occurs.
+    /// at one.
+    ///
+    /// Read from whichever stack is on screen rather than from the Posts one.
+    /// Keyed to Posts, a community opened from Search or from a link on the
+    /// Account tab showed a feed that marked posts read with no tally and no
+    /// way to clear them -- the control was missing exactly where the reader
+    /// had just arrived somewhere new.
     private var visibleFeedDescriptor: FeedDescriptorModel? {
-        guard selectedTab == .posts else { return nil }
-        switch postsRouter.path.last {
+        switch activeRouter.path.last {
         case .feed(let descriptor):
             return descriptor
         case .community(let name):
@@ -326,15 +346,12 @@ struct OctonautTabsView: View {
         }
     }
 
-    /// Toggling bumps the settings store's filter revision, which invalidates
-    /// the feed cache, so the refresh re-runs the filters rather than serving
-    /// the rows the previous setting produced.
-    private func toggleHideSeen(for descriptor: FeedDescriptorModel) {
-        dependencies.settings.hideSeenPosts.toggle()
-        // The tally counts what has been read since the last time the reader
-        // acted on it, so acting on it starts the count again.
-        store.resetPostsReadTally()
-        Task { await store.refreshPosts(for: descriptor) }
+    /// Takes the read posts out of the feed. No setting is changed and
+    /// nothing is refetched, so pressing it twice clears two batches rather
+    /// than undoing the first.
+    private func clearReadPosts(for descriptor: FeedDescriptorModel) {
+        store.clearReadPostsFromFeed()
+        Task { await store.loadMorePostsUntilSomethingIsVisible(for: descriptor) }
     }
 
     @ViewBuilder

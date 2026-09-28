@@ -16,6 +16,13 @@ struct SearchRootView: View {
         _model = State(initialValue: SearchFeatureModel(reddit: reddit ?? UnavailableRedditClient()))
     }
 
+    /// The account is pushed in rather than read by the model, so switching
+    /// account -- or signing in after the tab was first built -- takes effect
+    /// without rebuilding it.
+    private func syncAccount() {
+        model.accountID = dependencies.accounts.selectedAccountID
+    }
+
     var body: some View {
         Group {
             if submittedQuery.isEmpty {
@@ -76,6 +83,20 @@ struct SearchRootView: View {
                             }
                             .listRowInsets(EdgeInsets())
                     }
+                    if let paginationError = model.paginationError {
+                        // Under the list rather than instead of it: the
+                        // communities on screen are still good.
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(paginationError)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            Button("Retry") {
+                                Task { await model.loadTrendingCommunities(forceRefresh: true) }
+                            }
+                            .font(.caption.weight(.semibold))
+                        }
+                    }
                 case .empty:
                     Text("No trending communities found.")
                         .foregroundStyle(.secondary)
@@ -102,7 +123,14 @@ struct SearchRootView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .task { await model.loadTrendingCommunities() }
+        .task {
+            syncAccount()
+            await model.loadTrendingCommunities()
+        }
+        .onChange(of: dependencies.accounts.selectionGeneration) { _, _ in
+            syncAccount()
+            Task { await model.loadTrendingCommunities(forceRefresh: true) }
+        }
     }
 
     @ViewBuilder
@@ -131,6 +159,7 @@ struct SearchRootView: View {
                 ForEach(model.posts) { post in
                     OctonautPostRow(
                         post: post,
+                        isSeen: store.isSeen(post.id),
                         showsFlair: dependencies.settings.showPostFlair
                     )
                     .fixedSize(horizontal: false, vertical: true)

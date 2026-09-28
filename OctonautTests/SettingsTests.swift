@@ -267,12 +267,40 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(SettingsStore(defaults: defaults).showBottomNavigationOnLargeScreens)
     }
 
-    func testChangingFilterIncrementsFilterRevision() {
+    /// On by default, and remembered: it is only whether the control is on
+    /// screen, so it must not disturb the filter revision or anything else.
+    func testShowReadPostsBarDefaultsOnAndRoundTrips() {
+        let suite = "OctonautTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let settings = SettingsStore(defaults: defaults)
+        XCTAssertTrue(settings.showsReadPostsBar)
+
+        let before = settings.filterRevision
+        settings.showsReadPostsBar = false
+        XCTAssertEqual(settings.filterRevision, before)
+
+        let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertFalse(reloaded.showsReadPostsBar)
+    }
+
+    func testChangingAFetchTimeFilterIncrementsFilterRevision() {
+        let defaults = UserDefaults(suiteName: "OctonautTests.\(UUID())")!
+        let settings = SettingsStore(defaults: defaults)
+        let before = settings.filterRevision
+        settings.noteFilterChanged()
+        XCTAssertEqual(settings.filterRevision, before &+ 1)
+    }
+
+    /// Hide-seen is applied when the feed renders, so it must not invalidate
+    /// cached feeds. Bumping the revision on every press is what forced the
+    /// toggle to refetch, and a refetch that failed or was served warm left
+    /// read posts on screen.
+    func testTogglingHideSeenDoesNotIncrementFilterRevision() {
         let defaults = UserDefaults(suiteName: "OctonautTests.\(UUID())")!
         let settings = SettingsStore(defaults: defaults)
         let before = settings.filterRevision
         settings.hideSeenPosts.toggle()
-        XCTAssertEqual(settings.filterRevision, before &+ 1)
+        XCTAssertEqual(settings.filterRevision, before)
     }
 
     func testThemeRoundTripsThroughDefaults() {
@@ -297,7 +325,7 @@ final class SettingsTests: XCTestCase {
     private func post(isNSFW: Bool, isSpoiler: Bool) -> PostCardModel {
         PostCardModel(
             id: "t3_blur", community: "pics", author: "someone", title: "Title", body: "",
-            score: 1, comments: 0, age: "1h", vote: 0, isSaved: false, isSeen: false,
+            score: 1, comments: 0, age: "1h", vote: 0, isSaved: false,
             isNSFW: isNSFW, isSpoiler: isSpoiler, isSticky: false, isVideo: false,
             hasMedia: true, mediaTitle: "",
             shareURL: URL(string: "https://www.reddit.com/r/pics/comments/blur")!
@@ -691,4 +719,121 @@ private final class MemoryFeedCloud: CustomFeedCloudStore {
     func set(_ data: Data, forKey key: String) { values[key] = data }
     func removeObject(forKey key: String) { values.removeValue(forKey: key) }
     func synchronize() -> Bool { true }
+}
+
+
+/// Answers every request with a 403. The body decides which kind: Reddit's
+/// edge block page is HTML, a private subreddit's refusal is JSON. These
+/// tests never contact Reddit.
+final class BlockedRouteProtocol: URLProtocol, @unchecked Sendable {
+    private static let storage = Storage()
+    private final class Storage: @unchecked Sendable {
+        let lock = NSLock()
+        var count = 0
+        var servesHTML = true
+    }
+    static var requestCount: Int {
+        storage.lock.lock()
+        defer { storage.lock.unlock() }
+        return storage.count
+    }
+    static func reset(servesHTML: Bool) {
+        storage.lock.lock()
+        defer { storage.lock.unlock() }
+        storage.count = 0
+        storage.servesHTML = servesHTML
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.storage.lock.lock()
+        Self.storage.count += 1
+        let html = Self.storage.servesHTML
+        Self.storage.lock.unlock()
+        let url = request.url!
+        // The seed fetch is an ordinary page; only the JSON routes are refused.
+        let isSeed = url.path == "/" || url.path.isEmpty
+        let status = isSeed ? 200 : 403
+        let body = html
+            ? Data("<body class=theme-beta><div>blocked by network security</div></body>".utf8)
+            : Data(#"{"reason":"private","message":"Forbidden","error":403}"#.utf8)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: isSeed ? Data("<html></html>".utf8) : body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+
+
+extension SettingsTests {
+    private func blockedClient(servesHTML: Bool) -> URLSessionRedditClient {
+        BlockedRouteProtocol.reset(servesHTML: servesHTML)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BlockedRouteProtocol.self]
+        return URLSessionRedditClient(
+            credentialVault: InMemoryCredentialVault(), sessionConfiguration: configuration)
+    }
+
+    /// The edge block answers with an HTML page, and it is transient, so it is
+    /// reported as a limit rather than as a refusal the reader can do nothing
+    /// about.
+    func testAnHTMLBlockPageIsReportedAsATemporaryLimit() async {
+        let client = blockedClient(servesHTML: true)
+        do {
+            _ = try await client.trendingCommunities(limit: 5, account: nil)
+            XCTFail("Expected the request to fail")
+        } catch let error as RedditClientError {
+            guard case .temporarilyUnavailable = error else {
+                return XCTFail("Expected temporarilyUnavailable, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    /// A private subreddit refuses with JSON, and that refusal is real: it
+    /// must keep saying so, and must not be retried.
+    func testAJSONRefusalIsStillReportedAsAccessDenied() async {
+        let client = blockedClient(servesHTML: false)
+        do {
+            _ = try await client.trendingCommunities(limit: 5, account: nil)
+            XCTFail("Expected the request to fail")
+        } catch let error as RedditClientError {
+            guard case .accessDenied = error else {
+                return XCTFail("Expected accessDenied, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    /// The reader pressing Retry must reach Reddit even mid-cool-off --
+    /// otherwise the button lies for thirty seconds.
+    func testAReaderInitiatedRefreshIsNotHeldBackByTheCooldown() async {
+        let client = blockedClient(servesHTML: true)
+        _ = try? await client.trendingCommunities(limit: 5, account: nil)
+        let afterFirst = BlockedRouteProtocol.requestCount
+
+        _ = try? await client.trendingCommunities(
+            limit: 5, account: nil, responseCachePolicy: .reloadIgnoringCache)
+
+        XCTAssertGreaterThan(
+            BlockedRouteProtocol.requestCount, afterFirst,
+            "An explicit refresh should still be sent")
+    }
+
+    /// One block must not become a stampede: every other anonymous caller
+    /// fails immediately for the cool-off rather than repeating the request.
+    func testAnEdgeBlockStopsFurtherAnonymousRequestsForACooldown() async {
+        let client = blockedClient(servesHTML: true)
+        _ = try? await client.trendingCommunities(limit: 5, account: nil)
+        let afterFirst = BlockedRouteProtocol.requestCount
+        XCTAssertGreaterThan(afterFirst, 0)
+
+        _ = try? await client.trendingCommunities(limit: 5, account: nil)
+
+        XCTAssertEqual(
+            BlockedRouteProtocol.requestCount, afterFirst,
+            "A second anonymous call inside the cool-off should send nothing")
+    }
 }

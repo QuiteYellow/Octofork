@@ -910,7 +910,7 @@ final class DomainTests: XCTestCase {
             permalink: URL(string: "https://www.reddit.com/r/swift/comments/abc")!,
             community: CommunityReference(name: "swift"),
             title: "Media",
-            media: .video(url: imageURL, audioURL: audioURL, thumbnailURL: secondURL, isGIF: false)
+            media: .video(url: imageURL, audioURL: audioURL, thumbnailURL: secondURL, isGIF: false, width: 1280, height: 720)
         )
 
         let mapped = PostCardModel(post: post)
@@ -918,6 +918,7 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(mapped.thumbnailURL, secondURL)
         XCTAssertEqual(mapped.audioURL, audioURL)
         XCTAssertEqual(mapped.mediaKind, "video")
+        XCTAssertEqual(try XCTUnwrap(mapped.mediaAspectRatio), 1280.0 / 720.0, accuracy: 0.0001)
     }
 
     func testPostCardDoesNotRepeatImageURLAsBodyText() throws {
@@ -992,9 +993,9 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(card.thumbnailURL?.absoluteString, "https://preview.redd.it/second-thumb.jpg")
     }
 
-    func testRedditHostedVideoBecomesNativeVideoWithAudioAndPreview() async throws {
+    func testRedditHostedVideoPrefersTheHLSPlaylistOverTheDASHFallback() async throws {
         let data = Data(
-            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"video1","name":"t3_video1","permalink":"/r/videos/comments/video1/example/","title":"Example video","subreddit":"videos","url":"https://v.redd.it/clip123","is_self":false,"is_video":true,"post_hint":"hosted:video","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip123/DASH_720.mp4?source=fallback","hls_url":"https://v.redd.it/clip123/HLSPlaylist.m3u8","has_audio":true,"is_gif":false}},"preview":{"images":[{"source":{"url":"https://preview.redd.it/clip123.jpg?width=1080&amp;format=pjpg"}}]}}}]}}"#
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"video1","name":"t3_video1","permalink":"/r/videos/comments/video1/example/","title":"Example video","subreddit":"videos","url":"https://v.redd.it/clip123","is_self":false,"is_video":true,"post_hint":"hosted:video","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip123/DASH_720.mp4?source=fallback","hls_url":"https://v.redd.it/clip123/HLSPlaylist.m3u8","has_audio":true,"is_gif":false,"width":1920,"height":1080}},"preview":{"images":[{"source":{"url":"https://preview.redd.it/clip123.jpg?width=1080&amp;format=pjpg"}}]}}}]}}"#
                 .utf8)
         let client = FixtureRedditClient(listingData: data)
 
@@ -1004,13 +1005,36 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .video(let videoURL, let audioURL, let thumbnailURL, let isGIF) = post.media else {
+        guard case .video(let videoURL, let audioURL, let thumbnailURL, let isGIF, let width, let height) = post.media else {
             return XCTFail("Expected native video media")
         }
-        XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip123/DASH_720.mp4?source=fallback")
-        XCTAssertEqual(audioURL?.absoluteString, "https://v.redd.it/clip123/DASH_AUDIO_128.mp4?source=fallback")
+        // The playlist carries audio in-stream, so nothing has to be guessed,
+        // fetched or composed before the video can play.
+        XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip123/HLSPlaylist.m3u8")
+        XCTAssertNil(audioURL)
         XCTAssertEqual(thumbnailURL?.absoluteString, "https://preview.redd.it/clip123.jpg?width=1080&format=pjpg")
         XCTAssertFalse(isGIF)
+        XCTAssertEqual(width, 1920)
+        XCTAssertEqual(height, 1080)
+    }
+
+    func testRedditHostedVideoWithoutAPlaylistStillComposesTheDASHAudio() async throws {
+        let data = Data(
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"video2","name":"t3_video2","permalink":"/r/videos/comments/video2/example/","title":"Example video","subreddit":"videos","url":"https://v.redd.it/clip789","is_self":false,"is_video":true,"post_hint":"hosted:video","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip789/DASH_720.mp4?source=fallback","has_audio":true,"is_gif":false}}}}]}}"#
+                .utf8)
+        let client = FixtureRedditClient(listingData: data)
+
+        let listing = try await client.listing(
+            ListingRequest(feed: FeedDescriptor(destination: .home)),
+            account: nil
+        )
+        let post = try XCTUnwrap(listing.items.first)
+
+        guard case .video(let videoURL, let audioURL, _, _, _, _) = post.media else {
+            return XCTFail("Expected native video media")
+        }
+        XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip789/DASH_720.mp4?source=fallback")
+        XCTAssertEqual(audioURL?.absoluteString, "https://v.redd.it/clip789/DASH_AUDIO_128.mp4?source=fallback")
     }
 
     func testBareRedditVideoLinkUsesPlayableHLSURL() async throws {
@@ -1025,7 +1049,7 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .video(let videoURL, _, _, _) = post.media else {
+        guard case .video(let videoURL, _, _, _, _, _) = post.media else {
             return XCTFail("Expected a bare v.redd.it link to be treated as video")
         }
         XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip456/HLSPlaylist.m3u8")
@@ -1043,7 +1067,7 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .video(let videoURL, _, let thumbnailURL, _) = post.media else {
+        guard case .video(let videoURL, _, let thumbnailURL, _, _, _) = post.media else {
             return XCTFail("Expected crosspost parent video media")
         }
         XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/parentclip/DASH_480.mp4")
@@ -1445,7 +1469,7 @@ extension DomainTests {
                 id: "p\(index)", community: post.community, author: post.author,
                 authorFlair: post.authorFlair, title: post.title, body: post.body,
                 flair: post.flair, score: post.score, comments: post.comments,
-                age: post.age, vote: post.vote, isSaved: post.isSaved, isSeen: false,
+                age: post.age, vote: post.vote, isSaved: post.isSaved,
                 isNSFW: post.isNSFW, isSpoiler: post.isSpoiler, isSticky: post.isSticky,
                 isVideo: post.isVideo, hasMedia: post.hasMedia, mediaTitle: post.mediaTitle,
                 shareURL: post.shareURL, mediaURL: post.mediaURL,
@@ -1457,40 +1481,39 @@ extension DomainTests {
         // Nothing scrolled past yet: the first row is still on screen.
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: ["p0", "p1", "p2"], isScrolledFromTop: true), [])
+                in: posts, visibleIDs: ["p0", "p1", "p2"], seenIDs: [], isScrolledFromTop: true), [])
 
         // Scrolled down to the third row, so the first two have been read.
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: ["p2", "p3", "p4"], isScrolledFromTop: true),
+                in: posts, visibleIDs: ["p2", "p3", "p4"], seenIDs: [], isScrolledFromTop: true),
             ["p0", "p1"])
 
         // Posts already seen are not re-reported.
-        posts[0].isSeen = true
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: ["p2", "p3"], isScrolledFromTop: true), ["p1"])
+                in: posts, visibleIDs: ["p2", "p3"], seenIDs: ["p0"], isScrolledFromTop: true), ["p1"])
 
         // Scrolling back up marks nothing new.
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: ["p0", "p1"], isScrolledFromTop: true), [])
+                in: posts, visibleIDs: ["p0", "p1"], seenIDs: [], isScrolledFromTop: true), [])
 
         // A visible set that does not match the list -- the moment a feed
         // swaps contents -- must not mark the whole list read.
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: ["other"], isScrolledFromTop: true), [])
+                in: posts, visibleIDs: ["other"], seenIDs: [], isScrolledFromTop: true), [])
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: [], isScrolledFromTop: true), [])
+                in: posts, visibleIDs: [], seenIDs: [], isScrolledFromTop: true), [])
 
         // Resting at the top nothing has been scrolled past, whatever the
         // visible set claims. This is what discards the first-layout frame
         // where the top row reports itself briefly not-visible.
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: ["p1", "p2"], isScrolledFromTop: false), [])
+                in: posts, visibleIDs: ["p1", "p2"], seenIDs: [], isScrolledFromTop: false), [])
     }
 
     /// `setSeen` is a setter, not a flip. Marking a batch seen used to run
@@ -1506,11 +1529,11 @@ extension DomainTests {
 
         store.setSeen(true, postID: "a")
         store.setSeen(true, postIDs: store.posts.map(\.id))
-        XCTAssertEqual(store.posts.filter(\.isSeen).count, 2)
+        XCTAssertEqual(store.posts.filter { store.isSeen($0.id) }.count, 2)
 
         // markSeen still flips, which is what the explicit menu action wants.
         store.markSeen(postID: "a")
-        XCTAssertFalse(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
+        XCTAssertFalse(store.isSeen("a"))
 
         try await Task.sleep(for: .milliseconds(50))
         let stored = try await persistence.loadSeenPostIDs()
@@ -1530,14 +1553,40 @@ extension DomainTests {
         await store.refreshPosts(for: .popular)
 
         XCTAssertEqual(store.posts.count, 2)
-        XCTAssertFalse(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
-        XCTAssertTrue(try XCTUnwrap(store.posts.first { $0.id == "b" }).isSeen)
+        XCTAssertFalse(store.isSeen("a"))
+        XCTAssertTrue(store.isSeen("b"))
     }
 
-    /// A page that filters away entirely used to end the feed, because the
-    /// row whose appearance asks for the next page never rendered.
+    /// Each feed caches its own copy of a post, so marking one read in Home
+    /// left it unread in the copy cached by every other feed that contains
+    /// it -- and it came back, undimmed, when that feed was next shown.
     @MainActor
-    func testAFullyFilteredPageKeepsPagingInsteadOfEndingTheFeed() async throws {
+    func testAPostMarkedReadStaysReadWhenAnotherFeedIsServedFromCache() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let settings = Self.settings(hideSeen: true)
+        let store = OctonautFeatureStore(
+            reddit: client, settings: settings, persistence: InMemoryPersistenceStore())
+
+        // Both feeds cache their own copy of post "a", both unread.
+        await store.refreshPosts(for: .popular)
+        await store.refreshPosts(for: .home)
+
+        // Marked while Home is the loaded feed: only Home's cache is updated.
+        store.setSeen(true, postID: "a")
+        store.clearReadPostsFromFeed()
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+
+        // Popular is served from its stale cached copy.
+        await store.refreshPosts(for: .popular)
+
+        XCTAssertTrue(store.isSeen("a"))
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+    }
+
+    /// Seen posts are kept in the store and hidden when the feed renders, so
+    /// a page of them is fetched once rather than retried as a wipeout.
+    @MainActor
+    func testAPageOfSeenPostsIsFetchedOnceAndHiddenWhenRendered() async throws {
         let persistence = InMemoryPersistenceStore()
         for id in ["a", "b"] { try await persistence.markPostSeen(id) }
         let client = FixtureRedditClient(
@@ -1547,11 +1596,445 @@ extension DomainTests {
 
         await store.refreshPosts(for: .popular)
 
-        XCTAssertTrue(store.posts.isEmpty)
-        XCTAssertEqual(store.filteredPostCount, 4)
-        // Two attempts: the retry stops once Reddit repeats the cursor.
+        XCTAssertEqual(store.posts.count, 2)
+        XCTAssertTrue(store.visiblePosts.isEmpty)
+        XCTAssertEqual(store.filteredPostCount, 0)
         let requests = await client.listingRequests()
-        XCTAssertEqual(requests, 2)
+        XCTAssertEqual(requests, 1)
+    }
+
+    /// Hiding at render time means a whole page can be hidden, and then no
+    /// row exists to ask for the next one.
+    @MainActor
+    func testAFullyHiddenPageKeepsPagingInsteadOfShowingNothing() async throws {
+        let persistence = InMemoryPersistenceStore()
+        for id in ["a", "b"] { try await persistence.markPostSeen(id) }
+        let client = FixtureRedditClient(
+            listingData: Self.listingJSON(ids: ["a", "b"], after: "t3_next"))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        await store.loadMorePostsUntilSomethingIsVisible(for: .popular)
+
+        // It stops once Reddit hands back the same cursor rather than paging
+        // forever through a listing that has ended.
+        let requests = await client.listingRequests()
+        XCTAssertGreaterThan(requests, 1)
+    }
+
+    /// The toggle is a predicate over posts already in hand. It used to
+    /// refetch, which is how a failed or cache-served refresh could leave
+    /// read posts on screen -- and why pressing the control again "fixed" it.
+    @MainActor
+    func testTogglingHideSeenChangesTheFeedWithoutRefetching() async throws {
+        let persistence = InMemoryPersistenceStore()
+        try await persistence.markPostSeen("b")
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let settings = Self.settings(hideSeen: false)
+        let store = OctonautFeatureStore(
+            reddit: client, settings: settings, persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "b"])
+
+        settings.hideSeenPosts = true
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a"])
+
+        settings.hideSeenPosts = false
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "b"])
+
+        let requests = await client.listingRequests()
+        XCTAssertEqual(requests, 1)
+    }
+
+    @MainActor
+    private static func sortSettings(
+        rememberCommunity: Bool = false,
+        rememberMultireddit: Bool = false
+    ) -> SettingsStore {
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "OctonautTests.\(UUID())")!)
+        settings.rememberSortPerCommunity = rememberCommunity
+        settings.rememberSortPerMultireddit = rememberMultireddit
+        return settings
+    }
+
+    /// The sort a community was last read with comes back when the reader
+    /// returns to it, and does not follow them to another community.
+    @MainActor
+    func testSortIsRememberedPerCommunity() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a"], after: nil))
+        let swift = FeedDescriptorModel(kind: .community, name: "swift")
+        let apple = FeedDescriptorModel(kind: .community, name: "apple")
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.sortSettings(rememberCommunity: true),
+            persistence: persistence)
+
+        await store.refreshPosts(for: swift)
+        await store.applySort(.top, topTime: .week, for: swift)
+        XCTAssertEqual(store.selectedSort, .top)
+
+        // A different community does not inherit it.
+        await store.refreshPosts(for: apple)
+        XCTAssertEqual(store.selectedSort, .best)
+
+        // Returning does.
+        await store.refreshPosts(for: swift)
+        XCTAssertEqual(store.selectedSort, .top)
+        XCTAssertEqual(store.selectedTopTime, .week)
+    }
+
+    /// The record survives the store, which is the point of writing it.
+    @MainActor
+    func testARememberedSortOutlivesTheStore() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a"], after: nil))
+        let swift = FeedDescriptorModel(kind: .community, name: "swift")
+
+        let first = OctonautFeatureStore(
+            reddit: client, settings: Self.sortSettings(rememberCommunity: true),
+            persistence: persistence)
+        await first.refreshPosts(for: swift)
+        await first.applySort(.new, for: swift)
+
+        let second = OctonautFeatureStore(
+            reddit: client, settings: Self.sortSettings(rememberCommunity: true),
+            persistence: persistence)
+        await second.refreshPosts(for: swift)
+
+        XCTAssertEqual(second.selectedSort, .new)
+    }
+
+    /// With the setting off, sort behaves as it always has: one value that
+    /// follows the reader between feeds for the session, and nothing stored.
+    @MainActor
+    func testSortIsNotRememberedWhenTheSettingIsOff() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a"], after: nil))
+        let swift = FeedDescriptorModel(kind: .community, name: "swift")
+        let apple = FeedDescriptorModel(kind: .community, name: "apple")
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.sortSettings(), persistence: persistence)
+
+        await store.refreshPosts(for: swift)
+        await store.applySort(.top, for: swift)
+        await store.refreshPosts(for: apple)
+
+        XCTAssertEqual(store.selectedSort, .top, "Sort still carries across feeds when nothing is remembered")
+        let stored = try await persistence.loadFeedPreference(
+            feedKey: "community:swift", accountScope: "anonymous")
+        XCTAssertNil(stored)
+    }
+
+    /// Communities and multireddits are governed by their own settings.
+    @MainActor
+    func testMultiredditSortIsGovernedByItsOwnSetting() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a"], after: nil))
+        let multi = FeedDescriptorModel(kind: .multireddit, name: "devtools")
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.sortSettings(rememberCommunity: true),
+            persistence: persistence)
+
+        await store.refreshPosts(for: multi)
+        await store.applySort(.rising, for: multi)
+
+        let stored = try await persistence.loadFeedPreference(
+            feedKey: "multireddit:devtools", accountScope: "anonymous")
+        XCTAssertNil(stored)
+    }
+
+    /// Scrolling a little too far must be takeable back: a post past the
+    /// read line is held, not marked, and coming back to it cancels the mark.
+    @MainActor
+    func testScrollingBackBeforeTheGraceElapsesCancelsTheMark() async throws {
+        let scheduler = FeedSeenMarkScheduler(delay: .milliseconds(120))
+        var marked: [String] = []
+
+        scheduler.schedule(["a", "b"]) { marked.append($0) }
+        XCTAssertEqual(scheduler.pendingCount, 2)
+
+        // Scrolled back: "a" is on screen again, "b" is still past the line.
+        scheduler.schedule(["b"]) { marked.append($0) }
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(marked, ["b"])
+    }
+
+    /// Staying scrolled past marks it once the grace elapses.
+    @MainActor
+    func testStayingPastTheReadLineMarksAfterTheGrace() async throws {
+        let scheduler = FeedSeenMarkScheduler(delay: .milliseconds(120))
+        var marked: [String] = []
+
+        scheduler.schedule(["a"]) { marked.append($0) }
+        XCTAssertTrue(marked.isEmpty, "Nothing is marked while the grace runs")
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertEqual(marked, ["a"])
+        XCTAssertEqual(scheduler.pendingCount, 0)
+    }
+
+    /// Scrolling back to the top cancels everything waiting.
+    @MainActor
+    func testAnEmptyScheduleCancelsEverythingPending() async throws {
+        let scheduler = FeedSeenMarkScheduler(delay: .milliseconds(120))
+        var marked: [String] = []
+
+        scheduler.schedule(["a", "b"]) { marked.append($0) }
+        scheduler.schedule([]) { marked.append($0) }
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertTrue(marked.isEmpty)
+        XCTAssertEqual(scheduler.pendingCount, 0)
+    }
+
+    func testLinkHostNameDropsOnlyALeadingWWW() throws {
+        func host(_ string: String) throws -> String {
+            LinkHostName.display(for: try XCTUnwrap(URL(string: string)))
+        }
+
+        XCTAssertEqual(try host("https://www.theverge.com/2026/story"), "theverge.com")
+        XCTAssertEqual(try host("https://WWW.Example.com"), "Example.com")
+        XCTAssertEqual(try host("https://theverge.com/story"), "theverge.com")
+        // Not a `www.` prefix, however much it looks like one.
+        XCTAssertEqual(try host("https://www2.example.com"), "www2.example.com")
+        XCTAssertEqual(try host("https://wwwtheverge.com"), "wwwtheverge.com")
+        // Nothing to take a host from falls back to the whole thing.
+        XCTAssertEqual(try host("mailto:someone@example.com"), "mailto:someone@example.com")
+    }
+
+    /// Clearing is meant to last: quitting and coming back must not bring
+    /// the cleared posts back, whatever the hide-on-refresh setting says.
+    @MainActor
+    func testClearedPostsStayClearedAcrossLaunches() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+
+        let first = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+        await first.refreshPosts(for: .popular)
+        first.setSeen(true, postID: "a")
+        first.clearReadPostsFromFeed()
+        XCTAssertEqual(first.visiblePosts.map(\.id), ["b"])
+        try await Task.sleep(for: .milliseconds(50))
+
+        // A new store is the app started again.
+        let second = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+        await second.refreshPosts(for: .popular)
+
+        XCTAssertEqual(second.visiblePosts.map(\.id), ["b"])
+    }
+
+    /// Marking a cleared post unread brings it back, on the record too.
+    @MainActor
+    func testMarkingAClearedPostUnreadClearsTheRecord() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postID: "a")
+        store.clearReadPostsFromFeed()
+        store.markSeen(postID: "a")
+        try await Task.sleep(for: .milliseconds(50))
+
+        let cleared = try await persistence.loadClearedPostIDs()
+        XCTAssertTrue(cleared.isEmpty, "The record still lists \(cleared) as cleared")
+    }
+
+    /// The control is an action, not a switch. It used to flip the hide-seen
+    /// setting, so a second press put back everything the first press had
+    /// taken away -- the opposite of what the tally beside it promised.
+    @MainActor
+    func testPressingTheControlTwiceClearsTwoBatchesRatherThanUndoingTheFirst() async throws {
+        let client = FixtureRedditClient(
+            listingData: Self.listingJSON(ids: ["a", "b", "c"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false),
+            persistence: InMemoryPersistenceStore())
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postID: "a")
+        XCTAssertEqual(store.postsReadSinceReset, 1)
+
+        store.clearReadPostsFromFeed()
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b", "c"])
+        XCTAssertEqual(store.postsReadSinceReset, 0)
+
+        // Read another, press again: the new one goes and the first stays gone.
+        store.setSeen(true, postID: "b")
+        store.clearReadPostsFromFeed()
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["c"])
+        XCTAssertEqual(store.postsReadSinceReset, 0)
+    }
+
+    /// Clearing is the reader's own action, so it works whether or not read
+    /// posts are set to disappear on their own.
+    @MainActor
+    func testClearingWorksWithAutomaticHidingOff() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false),
+            persistence: InMemoryPersistenceStore())
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postID: "a")
+
+        // Read but still shown, greyed, until the reader clears it.
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "b"])
+        XCTAssertTrue(store.hasReadPostsInFeed)
+
+        store.clearReadPostsFromFeed()
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+        XCTAssertFalse(store.hasReadPostsInFeed)
+    }
+
+    /// Marking something unread undoes having cleared it away.
+    @MainActor
+    func testMarkingAClearedPostUnreadBringsItBack() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false),
+            persistence: InMemoryPersistenceStore())
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postID: "a")
+        store.clearReadPostsFromFeed()
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+
+        store.markSeen(postID: "a")
+
+        XCTAssertFalse(store.isSeen("a"))
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "b"])
+    }
+
+    /// A mark issued moments before a clear must not land after it.
+    ///
+    /// Writes used to be separate detached tasks, so a slow mark could be
+    /// applied to the table *after* the delete that was meant to wipe it.
+    /// The set in memory was empty, so the screen looked cleared -- and the
+    /// post came back greyed out on the next launch, because the row was
+    /// still there.
+    @MainActor
+    func testAMarkIssuedBeforeAClearCannotSurviveIt() async throws {
+        let persistence = DelayedSeenPersistenceStore()
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postIDs: ["a", "b"])
+        await store.clearSeenPosts()
+
+        XCTAssertEqual(store.seenPostCount, 0)
+        // Long enough that a write which escaped the queue would have landed
+        // by now: without ordering, the record is read back holding the marks
+        // that the clear was supposed to remove.
+        try await Task.sleep(for: .milliseconds(400))
+        let stored = try await persistence.loadSeenPostIDs()
+        XCTAssertTrue(stored.isEmpty, "The record still holds \(stored)")
+    }
+
+    /// Clearing the record has to reach both the store and the device: the
+    /// set is what the screen reads, the table is what survives a relaunch.
+    @MainActor
+    func testClearingReadPostsEmptiesTheSetAndTheRecord() async throws {
+        let persistence = InMemoryPersistenceStore()
+        try await persistence.markPostSeen("a")
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+        XCTAssertEqual(store.seenPostCount, 1)
+
+        await store.clearSeenPosts()
+
+        XCTAssertEqual(store.seenPostCount, 0)
+        XCTAssertFalse(store.isSeen("a"))
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "b"])
+        let stored = try await persistence.loadSeenPostIDs()
+        XCTAssertTrue(stored.isEmpty)
+    }
+
+    /// A cold launch used to render its first screenful before the record had
+    /// been read, so posts already read came up unread until it landed.
+    @MainActor
+    func testTheSeenRecordIsLoadedBeforeAnyPostsAreShown() async throws {
+        let persistence = InMemoryPersistenceStore()
+        try await persistence.markPostSeen("a")
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: false), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+
+        XCTAssertTrue(store.isSeen("a"))
+        XCTAssertEqual(store.seenPostCount, 1)
+    }
+
+    /// "Mark Visible Seen" is the reader saying they are done with these, so
+    /// the posts go -- unlike a post marked by scrolling past it, which stays
+    /// until they clear the tally.
+    @MainActor
+    func testMarkingVisibleSeenClearsThemFromTheFeedImmediately() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true),
+            persistence: InMemoryPersistenceStore())
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postIDs: ["a"], keepingVisible: false)
+
+        XCTAssertTrue(store.isSeen("a"))
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+    }
+
+    /// A post marked while scrolling must not vanish under the reader's
+    /// thumb; it goes when they clear the tally, which is what the control
+    /// promises.
+    @MainActor
+    func testPostsReadWhileScrollingStayVisibleUntilTheTallyIsCleared() async throws {
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true),
+            persistence: InMemoryPersistenceStore())
+
+        await store.refreshPosts(for: .popular)
+        store.setSeen(true, postID: "a")
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "b"])
+        XCTAssertEqual(store.postsReadSinceReset, 1)
+
+        store.clearReadPostsFromFeed()
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["b"])
+        XCTAssertEqual(store.postsReadSinceReset, 0)
+    }
+
+    /// Marking a post before the stored set has finished loading used to be
+    /// discarded: the load assigned the table's contents over the top of it.
+    @MainActor
+    func testMarksMadeBeforeTheStoredSeenSetLoadsAreNotDiscarded() async throws {
+        let persistence = InMemoryPersistenceStore()
+        try await persistence.markPostSeen("b")
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a", "b"], after: nil))
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        // Marked before any load has populated the set.
+        store.setSeen(true, postID: "a")
+        await store.refreshPosts(for: .popular)
+        store.clearReadPostsFromFeed()
+
+        XCTAssertTrue(store.visiblePosts.isEmpty)
     }
 
     /// An empty response is the end of the listing, not a filter wipeout, so
@@ -1572,6 +2055,22 @@ extension DomainTests {
 }
 
 extension DomainTests {
+    /// Discover used to send this anonymously -- the only call in the client
+    /// that did. Reddit answers an anonymous request for the listing with a
+    /// 403 and an HTML block page, so the tab failed for a signed-in reader
+    /// whose feed was loading fine.
+    @MainActor
+    func testTrendingCommunitiesCarriesTheSignedInAccount() async {
+        let client = FixtureRedditClient()
+        let account = AccountID(string: "t2_example")
+        let model = SearchFeatureModel(reddit: client, accountID: account)
+
+        await model.loadTrendingCommunities()
+
+        let used = await client.lastTrendingCommunitiesAccount()
+        XCTAssertEqual(used, account)
+    }
+
     /// The accessory's tally counts what has been read since the reader last
     /// acted on it, and acting on it starts the count again.
     @MainActor
@@ -1594,11 +2093,11 @@ extension DomainTests {
         store.setSeen(false, postID: "b")
         XCTAssertEqual(store.postsReadSinceReset, 1)
 
-        store.resetPostsReadTally()
+        store.clearReadPostsFromFeed()
         XCTAssertEqual(store.postsReadSinceReset, 0)
 
         // Clearing the tally does not disturb the seen record itself.
-        XCTAssertTrue(try XCTUnwrap(store.posts.first { $0.id == "a" }).isSeen)
+        XCTAssertTrue(store.isSeen("a"))
     }
 }
 
@@ -1623,7 +2122,7 @@ extension DomainTests {
         let posts = (0..<6).map { Self.unseenPost(id: "p\($0)") }
         XCTAssertEqual(
             FeedScrollReadRule.postsScrolledPast(
-                in: posts, visibleIDs: tracker.effectiveVisibleIDs,
+                in: posts, visibleIDs: tracker.effectiveVisibleIDs, seenIDs: [],
                 isScrolledFromTop: tracker.isScrolledFromTop),
             ["p0", "p1"])
 
@@ -1648,11 +2147,56 @@ extension DomainTests {
             id: id, community: post.community, author: post.author,
             authorFlair: post.authorFlair, title: post.title, body: post.body,
             flair: post.flair, score: post.score, comments: post.comments,
-            age: post.age, vote: post.vote, isSaved: post.isSaved, isSeen: false,
+            age: post.age, vote: post.vote, isSaved: post.isSaved,
             isNSFW: post.isNSFW, isSpoiler: post.isSpoiler, isSticky: post.isSticky,
             isVideo: post.isVideo, hasMedia: post.hasMedia, mediaTitle: post.mediaTitle,
             shareURL: post.shareURL, mediaURL: post.mediaURL,
             thumbnailURL: post.thumbnailURL, mediaKind: post.mediaKind,
             galleryURLs: post.galleryURLs, audioURL: post.audioURL)
     }
+}
+
+/// Forwards to an in-memory store, but makes marking a post slow enough that
+/// a clear issued afterwards would overtake it unless writes are ordered.
+actor DelayedSeenPersistenceStore: PersistenceStore {
+    private let inner = InMemoryPersistenceStore()
+    private let markDelay: Duration
+
+    init(markDelay: Duration = .milliseconds(120)) {
+        self.markDelay = markDelay
+    }
+
+    func markPostSeen(_ id: String, seenAt: Date) async throws {
+        try? await Task.sleep(for: markDelay)
+        try await inner.markPostSeen(id, seenAt: seenAt)
+    }
+
+    func loadSeenPostIDs() async throws -> [String] { try await inner.loadSeenPostIDs() }
+    func removePostSeen(_ id: String) async throws { try await inner.removePostSeen(id) }
+    func clearSeenPosts() async throws { try await inner.clearSeenPosts() }
+    func loadClearedPostIDs() async throws -> [String] { try await inner.loadClearedPostIDs() }
+    func setPostsCleared(_ ids: [String], cleared: Bool) async throws {
+        try await inner.setPostsCleared(ids, cleared: cleared)
+    }
+    func loadAccounts() async throws -> [Account] { try await inner.loadAccounts() }
+    func saveAccount(_ account: Account) async throws { try await inner.saveAccount(account) }
+    func deleteAccount(_ id: AccountID) async throws { try await inner.deleteAccount(id) }
+    func loadFeedPreference(feedKey: String, accountScope: String) async throws -> FeedSortPreference? {
+        try await inner.loadFeedPreference(feedKey: feedKey, accountScope: accountScope)
+    }
+    func saveFeedPreference(_ preference: FeedSortPreference, feedKey: String, accountScope: String) async throws {
+        try await inner.saveFeedPreference(preference, feedKey: feedKey, accountScope: accountScope)
+    }
+    func loadDrafts(accountID: AccountID?) async throws -> [Draft] { try await inner.loadDrafts(accountID: accountID) }
+    func saveDraft(_ draft: Draft) async throws { try await inner.saveDraft(draft) }
+    func deleteDraft(_ id: UUID) async throws { try await inner.deleteDraft(id) }
+    func clearDrafts(accountID: AccountID?) async throws { try await inner.clearDrafts(accountID: accountID) }
+    func loadUsageStatistics() async throws -> UsageStatistics { try await inner.loadUsageStatistics() }
+    func incrementStatistic(_ counter: UsageStatistic, by amount: Int) async throws {
+        try await inner.incrementStatistic(counter, by: amount)
+    }
+    func beginUsageSession() async { await inner.beginUsageSession() }
+    func recordCommunityVisit(_ community: String) async throws { try await inner.recordCommunityVisit(community) }
+    func resetUsageStatistics() async throws { try await inner.resetUsageStatistics() }
+    func removeAllData() async throws { try await inner.removeAllData() }
 }

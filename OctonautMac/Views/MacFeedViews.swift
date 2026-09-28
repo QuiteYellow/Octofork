@@ -41,11 +41,12 @@ struct MacFeedListView: View {
                         .foregroundStyle(.secondary)
                     }
 
-                    ForEach(store.posts) { post in
+                    ForEach(store.visiblePosts) { post in
                         Group {
                             if dependencies.settings.feedLayout == .full {
                                 MacPostMediaCard(
                                     post: post,
+                                    isSeen: store.isSeen(post.id),
                                     canVote: currentAccountID != nil,
                                     onVote: { performVote(post, value: $0) }
                                 )
@@ -185,6 +186,8 @@ struct MacFeedListView: View {
 
 private struct MacPostMediaCard: View {
     let post: PostCardModel
+    /// Derived where the row is drawn. See `OctonautPostRow.isSeen`.
+    let isSeen: Bool
     let canVote: Bool
     let onVote: (Int) -> Void
     @Environment(AppDependencies.self) private var dependencies
@@ -273,7 +276,7 @@ private struct MacPostMediaCard: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
-        .opacity(post.isSeen ? 0.68 : 1)
+        .opacity(isSeen ? 0.68 : 1)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
             "r/\(post.community), \(post.title), \(post.score) points, \(post.comments) comments"

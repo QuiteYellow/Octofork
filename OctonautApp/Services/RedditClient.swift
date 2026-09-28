@@ -8,6 +8,10 @@ enum RedditClientError: Error, Sendable, Equatable, LocalizedError {
     case rateLimited(retryAfter: TimeInterval?)
     case authenticationRequired
     case accessDenied
+    /// Reddit's edge refusing traffic it does not recognise, as opposed to
+    /// content the reader genuinely may not see. Transient: the same URL
+    /// measured 403, then 200, then 403 within ten minutes on 2026-09-28.
+    case temporarilyUnavailable
     case notFound
     case malformedResponse
     case reddit(errors: [String])
@@ -21,6 +25,8 @@ enum RedditClientError: Error, Sendable, Equatable, LocalizedError {
         case .rateLimited: return "Reddit is rate limiting requests. Try again shortly."
         case .authenticationRequired: return "This Reddit account needs to sign in again."
         case .accessDenied: return "Reddit denied access to this content."
+        case .temporarilyUnavailable:
+            return "Reddit is limiting requests right now. Trying again shortly."
         case .notFound: return "Reddit could not find this content."
         case .malformedResponse: return "Reddit returned data Octonaut could not read."
         case .reddit(let errors): return errors.joined(separator: ", ")
@@ -41,7 +47,7 @@ protocol RedditClient: Sendable {
     func search(_ request: RedditSearchRequest, account: AccountID?) async throws -> Listing<Post>
     func communities(_ request: RedditCommunitySearchRequest, account: AccountID?) async throws -> Listing<Community>
     func users(_ request: RedditUserSearchRequest, account: AccountID?) async throws -> Listing<UserProfile>
-    func trendingCommunities(limit: Int) async throws -> Listing<Community>
+    func trendingCommunities(limit: Int, account: AccountID?, responseCachePolicy: ListingRequest.ResponseCachePolicy) async throws -> Listing<Community>
     func subscribedCommunities(after: String?, account: AccountID) async throws -> Listing<Community>
     func userProfile(_ username: String, account: AccountID?) async throws -> UserProfile
     func userComments(
@@ -110,6 +116,15 @@ actor URLSessionRedditClient: RedditClient {
     private let credentialVault: any AccountCredentialVault
     private let userAgent: String
     private var didBootstrapAnonymousSession = false
+    /// While set, anonymous requests fail immediately instead of being sent.
+    ///
+    /// The feed, the media preloader, trending and a search can all be in
+    /// flight at once. Without this, one edge block becomes a dozen separate
+    /// requests that are each refused and each surfaced as their own error --
+    /// and a burst of refused traffic is plausibly part of what earns the
+    /// block in the first place.
+    private var anonymousBlockedUntil: Date?
+    private let anonymousBlockCooldown: TimeInterval = 30
     private var isMoreCommentsRequestInFlight = false
     private var moreCommentsRequestWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -280,15 +295,27 @@ actor URLSessionRedditClient: RedditClient {
         return try RedditJSONCodec.decodeUserSearch(data)
     }
 
-    func trendingCommunities(limit: Int = 25) async throws -> Listing<Community> {
+    /// Carries the signed-in session like every other listing call.
+    ///
+    /// It used to pass `account: nil` -- the only call in this client that
+    /// did, and the protocol did not even let a caller supply one. Reddit
+    /// answers an anonymous request for this listing with a 403 and an HTML
+    /// block page, which surfaced as "Reddit denied access to this content"
+    /// on a Discover tab that had a perfectly good session available to it.
+    func trendingCommunities(
+        limit: Int = 25,
+        account: AccountID? = nil,
+        responseCachePolicy: ListingRequest.ResponseCachePolicy = .useCache
+    ) async throws -> Listing<Community> {
         let route = Self.trendingCommunitiesRoute(limit: limit)
         let data = try await requestData(
             method: "GET",
             path: route.path,
             query: route.query,
             body: nil,
-            account: nil,
-            retryable: true
+            account: account,
+            retryable: true,
+            responseCachePolicy: responseCachePolicy
         )
         return try RedditJSONCodec.decodeCommunities(data)
     }
@@ -371,6 +398,14 @@ actor URLSessionRedditClient: RedditClient {
         responseCachePolicy: ListingRequest.ResponseCachePolicy = .useCache,
         websiteHost: String? = nil
     ) async throws -> Data {
+        // A refresh the reader asked for is allowed through: they are standing
+        // there watching, and the block may well have lifted since.
+        let isUserInitiated = responseCachePolicy == .reloadIgnoringCache
+        if account == nil, !isUserInitiated,
+           let blockedUntil = anonymousBlockedUntil, blockedUntil > .now {
+            throw RedditClientError.temporarilyUnavailable
+        }
+
         var attempt = 0
         while true {
             do {
@@ -384,7 +419,14 @@ actor URLSessionRedditClient: RedditClient {
                     websiteHost: websiteHost
                 )
             } catch let error as RedditClientError {
-                guard retryable, attempt < 2, shouldRetry(error) else { throw error }
+                guard retryable, attempt < 2, shouldRetry(error, account: account) else {
+                    // Out of attempts against an edge block: stop asking for a
+                    // while rather than letting every other caller repeat it.
+                    if case .temporarilyUnavailable = error, account == nil {
+                        anonymousBlockedUntil = .now.addingTimeInterval(anonymousBlockCooldown)
+                    }
+                    throw error
+                }
                 let delay: TimeInterval
                 if case .rateLimited(let retryAfter) = error, let retryAfter {
                     delay = min(max(retryAfter, 0.25), 30)
@@ -462,8 +504,25 @@ actor URLSessionRedditClient: RedditClient {
 
         guard let http = response as? HTTPURLResponse else { throw RedditClientError.invalidResponse }
         if http.statusCode == 401 || http.statusCode == 403 {
-            if http.statusCode == 403 { throw RedditClientError.accessDenied }
+            if http.statusCode == 403 {
+                // Two different things arrive as 403, and they deserve
+                // different words. A private or quarantined subreddit answers
+                // with JSON; the edge block answers with an HTML page. Reading
+                // the body is what separates "you may not see this" from
+                // "Reddit is not serving us right now".
+                if account == nil, isHTML(data) {
+                    // Dropping the seed lets the retry fetch fresh cookies
+                    // rather than repeat the request that was just refused.
+                    didBootstrapAnonymousSession = false
+                    throw RedditClientError.temporarilyUnavailable
+                }
+                throw RedditClientError.accessDenied
+            }
             throw RedditClientError.authenticationRequired
+        }
+        if account == nil, (200..<300).contains(http.statusCode) {
+            // Anything getting through means the block has lifted.
+            anonymousBlockedUntil = nil
         }
         if http.statusCode == 404 { throw RedditClientError.notFound }
         if http.statusCode == 429 {
@@ -473,10 +532,7 @@ actor URLSessionRedditClient: RedditClient {
             throw RedditClientError.http(statusCode: http.statusCode, message: nil)
         }
 
-        let firstNonWhitespace = data.first { byte in
-            byte != 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D
-        }
-        if firstNonWhitespace == 0x3C { // '<' - an HTML login/error page
+        if isHTML(data) { // an HTML login/error page rather than JSON
             throw RedditClientError.authenticationRequired
         }
         if let result = try? RedditJSONCodec.decodeActionResult(data),
@@ -490,20 +546,40 @@ actor URLSessionRedditClient: RedditClient {
         return data
     }
 
+    /// Seeds Reddit's logged-out edge cookies by fetching an ordinary page.
+    ///
+    /// Reddit's edge answers a cookie-less anonymous request with a 403 and an
+    /// HTML "blocked by network security" page. A plain page fetch is what
+    /// earns the cookies -- `csrf_token`, `loid`, `session_tracker`,
+    /// `token_v2`, `edgebucket` -- that the JSON routes then accept.
+    ///
+    /// Three things were wrong with the previous version, all of which made it
+    /// a no-op that reported success:
+    ///
+    /// - It marked itself done *before* the request, and only undid that on a
+    ///   thrown error. A 403 is not a thrown error, so a blocked seed counted
+    ///   as a good one for the rest of the process.
+    /// - It never looked at the status code, so it could not tell the two
+    ///   apart in the first place.
+    /// - It fetched `old.reddit.com`, which is not the host the JSON calls
+    ///   use, and which answered those calls with a 404 when measured on
+    ///   2026-09-28.
     private func bootstrapAnonymousSessionIfNeeded() async {
         guard !didBootstrapAnonymousSession else { return }
-        didBootstrapAnonymousSession = true
-        guard let url = URL(string: "https://old.reddit.com/") else { return }
+        guard let url = URL(string: "https://www.reddit.com/") else { return }
         var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
-        do {
-            _ = try await session.data(for: request)
-        } catch {
-            // A later manual refresh should be able to retry the cookie seed.
-            didBootstrapAnonymousSession = false
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("en-GB,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode) else {
+            // Left false on purpose: the next request seeds again rather than
+            // spending the rest of the process assuming cookies it never got.
+            return
         }
+        didBootstrapAnonymousSession = true
     }
 
     private func makeURL(path: String, query: [URLQueryItem], websiteHost: String? = nil) -> URL? {
@@ -732,9 +808,21 @@ actor URLSessionRedditClient: RedditClient {
         return TimeInterval(value)
     }
 
-    private func shouldRetry(_ error: RedditClientError) -> Bool {
+    /// Reddit answers with HTML when it is not answering with data: a login
+    /// page, or the edge's block page.
+    private func isHTML(_ data: Data) -> Bool {
+        let firstNonWhitespace = data.first { byte in
+            byte != 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D
+        }
+        return firstNonWhitespace == 0x3C // '<'
+    }
+
+    private func shouldRetry(_ error: RedditClientError, account: AccountID?) -> Bool {
         switch error {
         case .rateLimited, .transport: return true
+        // Only anonymously, and only for the edge block -- a real refusal is
+        // not going to change its mind on a retry.
+        case .temporarilyUnavailable: return account == nil
         default: return false
         }
     }

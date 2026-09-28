@@ -35,12 +35,13 @@ enum FeedScrollReadRule {
     static func postsScrolledPast(
         in posts: [PostCardModel],
         visibleIDs: Set<String>,
+        seenIDs: Set<String>,
         isScrolledFromTop: Bool
     ) -> [String] {
         guard isScrolledFromTop,
               !visibleIDs.isEmpty,
               let topmost = posts.firstIndex(where: { visibleIDs.contains($0.id) })
         else { return [] }
-        return posts[..<topmost].lazy.filter { !$0.isSeen }.map(\.id)
+        return posts[..<topmost].lazy.map(\.id).filter { !seenIDs.contains($0) }
     }
 }
