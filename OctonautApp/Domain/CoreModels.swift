@@ -101,6 +101,20 @@ struct RichText: Codable, Hashable, Sendable {
     }
 }
 
+/// The host of a link, as a reader would say it.
+///
+/// `www.` is noise on a label whose whole job is to tell someone where a
+/// link goes -- every site has it and no one reads it. Only a leading
+/// `www.` is dropped, so a host that genuinely starts with something like
+/// `www2.` keeps it.
+enum LinkHostName {
+    static func display(for url: URL) -> String {
+        guard let host = url.host, !host.isEmpty else { return url.absoluteString }
+        guard host.lowercased().hasPrefix("www.") else { return host }
+        return String(host.dropFirst(4))
+    }
+}
+
 enum EmbeddedVideoURL {
     static func embedURL(for url: URL) -> URL? {
         guard let host = url.host?.lowercased(),
