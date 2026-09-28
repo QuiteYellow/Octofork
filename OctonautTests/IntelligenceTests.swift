@@ -60,6 +60,24 @@ final class IntelligenceTests: XCTestCase {
         XCTAssertTrue(SummaryEligibility.post(shortPost))
     }
 
+    func testSummaryCacheReusesMatchingContentAndProvider() async {
+        let cache = InMemorySummaryCache(lifetime: 60, capacity: 2)
+        let summary = ContentSummary(bullets: ["A useful summary"], generatedAt: Date(timeIntervalSince1970: 1_000))
+        let key = SummaryCacheKey(contentID: "post:1", title: "Title", body: "Body", modelFamily: "on-device")
+        await cache.insert(summary, for: key, now: Date(timeIntervalSince1970: 1_000))
+
+        let reused = await cache.value(for: key, now: Date(timeIntervalSince1970: 1_030))
+        XCTAssertEqual(reused, summary)
+        let otherProvider = SummaryCacheKey(contentID: "post:1", title: "Title", body: "Body", modelFamily: "remote-model")
+        let otherContent = SummaryCacheKey(contentID: "post:1", title: "Title", body: "Updated", modelFamily: "on-device")
+        let providerResult = await cache.value(for: otherProvider, now: Date(timeIntervalSince1970: 1_030))
+        let contentResult = await cache.value(for: otherContent, now: Date(timeIntervalSince1970: 1_030))
+        XCTAssertNil(providerResult)
+        XCTAssertNil(contentResult)
+        let expired = await cache.value(for: key, now: Date(timeIntervalSince1970: 1_061))
+        XCTAssertNil(expired)
+    }
+
     @MainActor
     func testRemoteSummaryAvailabilityIsSeparateFromOnDeviceFeatures() async throws {
         let apiKeys = InMemorySummaryAPIKeyStore()

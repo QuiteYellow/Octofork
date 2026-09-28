@@ -40,8 +40,10 @@ struct SettingsDetailView: View {
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
     @Environment(AppDependencies.self) private var dependencies
-    @AppStorage("appearance.showUsername") private var showUsername = true
     @State private var showingReset = false
+    @State private var showingAppReset = false
+    @State private var isResettingApp = false
+    @State private var appResetNotice: AppResetNotice?
     @State private var imageCacheBytes = 0
     @State private var responseCacheBytes = 0
     @State private var usageStatistics = UsageStatistics()
@@ -82,6 +84,21 @@ struct SettingsDetailView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .confirmationDialog("Reset Octonaut?", isPresented: $showingAppReset, titleVisibility: .visible) {
+            Button("Reset App", role: .destructive) {
+                Task { await resetApp() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes all Octonaut data from this device and deletes synced custom feeds from iCloud. You will need to sign in again.")
+        }
+        .alert(item: $appResetNotice) { notice in
+            Alert(
+                title: Text(notice.title),
+                message: Text(notice.message),
+                dismissButton: .default(Text("OK"))
+            )
+        }
         .task(id: destination) {
             intelligenceAvailability = await dependencies.intelligence.availability
             if destination == .intelligence {
@@ -116,6 +133,9 @@ struct SettingsDetailView: View {
                 Picker("Default post sort", selection: Binding(get: { dependencies.settings.defaultPostSort }, set: { dependencies.settings.defaultPostSort = $0 })) {
                     ForEach(["default", "best", "hot", "new", "top", "rising", "controversial"], id: \.self) { value in Text(value.capitalized).tag(PostSort(rawValue: value)) }
                 }
+                Picker("Default top time", selection: Binding(get: { dependencies.settings.defaultTopTime }, set: { dependencies.settings.defaultTopTime = $0 })) {
+                    ForEach(TopTime.allCases, id: \.self) { value in Text(value.title).tag(value) }
+                }
                 Picker("Default comment sort", selection: Binding(get: { dependencies.settings.defaultCommentSort }, set: { dependencies.settings.defaultCommentSort = $0 })) {
                     ForEach(["best", "new", "top", "controversial", "old", "qa"], id: \.self) { value in Text(value == "qa" ? "Q&A" : value.capitalized).tag(CommentSort(rawValue: value)) }
                 }
@@ -138,6 +158,7 @@ struct SettingsDetailView: View {
 
     private var appearance: some View {
         Group {
+            AppIconPicker()
             Section("Reading") {
                 Picker("Feed layout", selection: Binding(get: { dependencies.settings.feedLayout }, set: { dependencies.settings.feedLayout = $0 })) { Text("Media cards").tag(FeedLayout.full); Text("Compact rows").tag(FeedLayout.compact) }
                 Picker("Thumbnail side", selection: Binding(get: { dependencies.settings.compactThumbnailSide }, set: { dependencies.settings.compactThumbnailSide = $0 })) { Text("Left").tag(CompactThumbnailSide.left); Text("Right").tag(CompactThumbnailSide.right) }
@@ -154,12 +175,19 @@ struct SettingsDetailView: View {
                     Text("Always").tag(AutoplayVideo.always)
                 }
             }
-            Section("iPad") {
+            Section("Large screens") {
                 Toggle("Use split view", isOn: Binding(
                     get: { dependencies.settings.useSplitViewOnIPad },
                     set: { dependencies.settings.useSplitViewOnIPad = $0 }
                 ))
-                Text("Shows communities, the selected feed, and post details in separate columns when space allows.")
+                Toggle("Show navigation at bottom", isOn: Binding(
+                    get: { dependencies.settings.showBottomNavigationOnLargeScreens },
+                    set: { dependencies.settings.showBottomNavigationOnLargeScreens = $0 }
+                ))
+                Text("Shows communities, the selected feed, and post details in separate columns on iPad and wide inner displays.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text("Navigation appears in the sidebar by default. Turn this on to use the floating bottom navigation instead.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -270,7 +298,7 @@ struct SettingsDetailView: View {
     private var account: some View {
         Section {
             NavigationLink(value: FeatureRoute.account(store.accounts.first?.username ?? "Accounts")) { Label("Manage Accounts", systemImage: "person.2") }
-            Toggle("Show username in Account tab", isOn: $showUsername)
+            Toggle("Show username in Account tab", isOn: Binding(get: { dependencies.settings.showUsernameInAccountTab }, set: { dependencies.settings.showUsernameInAccountTab = $0 }))
             Toggle("Confirm account switch while composing", isOn: Binding(get: { dependencies.settings.confirmAccountSwitchWhileComposing }, set: { dependencies.settings.confirmAccountSwitchWhileComposing = $0 }))
             Text("Account sessions are isolated. Removing an account also removes its Keychain credential and private cached data.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -368,7 +396,26 @@ struct SettingsDetailView: View {
             }
             Section("Reset") {
                 Button("Reset Settings to Defaults", role: .destructive) { dependencies.settings.resetToDefaults() }
+                Button("Reset App", role: .destructive) { showingAppReset = true }
+                    .disabled(isResettingApp)
+                Text("Removes accounts, Keychain credentials, drafts, preferences, caches, statistics, and synced custom feeds.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func resetApp() async {
+        isResettingApp = true
+        defer { isResettingApp = false }
+        do {
+            try await dependencies.resetAllData()
+            appResetNotice = AppResetNotice(
+                title: "Octonaut Reset",
+                message: "All app data was removed. You can now sign in again."
+            )
+        } catch {
+            appResetNotice = AppResetNotice(title: "Reset Incomplete", message: error.localizedDescription)
         }
     }
 
@@ -406,4 +453,10 @@ struct SettingsDetailView: View {
             .padding(.vertical, 18)
         }
     }
+}
+
+private struct AppResetNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }

@@ -80,18 +80,34 @@ struct OctonautTabsView: View {
     @Environment(AppDependencies.self) private var dependencies
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @State private var selectedTab: AppTab = .posts
-    @State private var postsRouter = OctonautFeatureRouter(path: [.feed(.home)])
+    @State private var selectedTab: AppTab
+    @State private var postsRouter: OctonautFeatureRouter
     @State private var inboxRouter = OctonautFeatureRouter()
     @State private var accountRouter = OctonautFeatureRouter()
     @State private var searchRouter = OctonautFeatureRouter()
-    @State private var settingsRouter = OctonautFeatureRouter()
+    @State private var settingsRouter: OctonautFeatureRouter
     @State private var postsSplitState = PostsSplitState()
     @State private var store: OctonautFeatureStore
 
     init(store: OctonautFeatureStore = .preview, reddit: (any RedditClient)? = nil) {
         _store = State(initialValue: store)
         self.reddit = reddit
+#if DEBUG
+        let screenshot = ProcessInfo.processInfo.environment["OCTONAUT_SCREENSHOT"]
+        _selectedTab = State(initialValue: ["settings", "theme"].contains(screenshot) ? .settings : .posts)
+        let path: [FeatureRoute]
+        switch screenshot {
+        case "feeds": path = []
+        case "detail": path = [.feed(.home), .post(.screenshotCoast)]
+        default: path = [.feed(.home)]
+        }
+        _postsRouter = State(initialValue: OctonautFeatureRouter(path: path))
+        _settingsRouter = State(initialValue: OctonautFeatureRouter(path: screenshot == "theme" ? [.settings(.theme)] : []))
+#else
+        _selectedTab = State(initialValue: .posts)
+        _postsRouter = State(initialValue: OctonautFeatureRouter(path: [.feed(.home)]))
+        _settingsRouter = State(initialValue: OctonautFeatureRouter())
+#endif
     }
 
     var body: some View {
@@ -103,10 +119,13 @@ struct OctonautTabsView: View {
                 FloatingTabBar(
                     selection: $selectedTab,
                     unreadCount: store.unreadCount,
-                    accountTitle: dependencies.accounts.selectedAccount?.username ?? "Account"
+                    accountTitle: accountTabTitle(whenSignedOut: "Account")
                 )
                 .padding(.horizontal, 24)
                 .padding(.bottom, 14)
+            } else if usesSidebarTabBar {
+                compactTabs
+                    .tabViewStyle(.sidebarAdaptable)
             } else {
                 compactTabs
             }
@@ -166,6 +185,14 @@ struct OctonautTabsView: View {
         })
     }
 
+    /// The signed-in username doubles as the Account tab's label, so it is
+    /// suppressed when the user has turned that off.
+    private func accountTabTitle(whenSignedOut fallback: String) -> String {
+        guard dependencies.settings.showUsernameInAccountTab,
+              let username = dependencies.accounts.selectedAccount?.username else { return fallback }
+        return username
+    }
+
     private var accountStateKey: String {
         let accountKey = dependencies.accounts.accounts.map {
             "\($0.id.description):\($0.health.rawValue)"
@@ -196,11 +223,18 @@ struct OctonautTabsView: View {
     }
 
     private var shouldUsePostsSplitView: Bool {
-        horizontalSizeClass == .regular && dependencies.settings.useSplitViewOnIPad
+        OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass)
+            && dependencies.settings.useSplitViewOnIPad
     }
 
     private var usesFloatingTabBar: Bool {
-        horizontalSizeClass == .regular
+        OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass)
+            && dependencies.settings.showBottomNavigationOnLargeScreens
+    }
+
+    private var usesSidebarTabBar: Bool {
+        OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass)
+            && !dependencies.settings.showBottomNavigationOnLargeScreens
     }
 
     private var persistentTabContent: some View {
@@ -217,22 +251,22 @@ struct OctonautTabsView: View {
 
     private var compactTabs: some View {
         TabView(selection: $selectedTab) {
-            tabContent(for: .posts)
-                .tabItem { Label("Posts", systemImage: "rectangle.stack") }
-                .tag(AppTab.posts)
-            tabContent(for: .inbox)
-                .tabItem { Label("Inbox", systemImage: "envelope") }
+            Tab("Posts", systemImage: "rectangle.stack", value: AppTab.posts) {
+                tabContent(for: .posts)
+            }
+            Tab("Inbox", systemImage: "envelope", value: AppTab.inbox) {
+                tabContent(for: .inbox)
+            }
                 .badge(store.unreadCount)
-                .tag(AppTab.inbox)
-            tabContent(for: .account)
-                .tabItem { Label(dependencies.accounts.selectedAccount?.username ?? "Accounts", systemImage: "person.crop.circle") }
-                .tag(AppTab.account)
-            tabContent(for: .search)
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                .tag(AppTab.search)
-            tabContent(for: .settings)
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(AppTab.settings)
+            Tab(accountTabTitle(whenSignedOut: "Accounts"), systemImage: "person.crop.circle", value: AppTab.account) {
+                tabContent(for: .account)
+            }
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                tabContent(for: .search)
+            }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                tabContent(for: .settings)
+            }
         }
     }
 
@@ -365,7 +399,8 @@ private struct AdaptivePostsTabView: View {
     var body: some View {
         @Bindable var router = router
 
-        if horizontalSizeClass == .regular && dependencies.settings.useSplitViewOnIPad {
+        if OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass)
+            && dependencies.settings.useSplitViewOnIPad {
             PostsSplitView(store: store, router: router, state: splitState)
                 .onAppear(perform: consumeSelectionRoutes)
                 .onChange(of: router.path) { _, _ in consumeSelectionRoutes() }
@@ -394,88 +429,89 @@ private struct PostsSplitView: View {
     let state: PostsSplitState
 
     @State private var sidebarVisible = true
-    @State private var showingCommunities = false
 
     var body: some View {
-        @Bindable var router = router
-
         GeometryReader { geometry in
-            let wideLayout = geometry.size.width >= 1100
-            HStack(spacing: 0) {
-                if sidebarVisible && geometry.size.width >= 900 {
-                    NavigationStack {
-                        PostsRootView(
-                            store: store,
-                            router: router,
-                            onSelectFeed: selectFeed,
-                            selectedFeed: state.selectedFeed
-                        )
-                    }
-                    .frame(width: 240)
-                    Divider()
-                }
-
-                if wideLayout {
-                    NavigationStack {
-                        selectedFeedView
-                            .toolbar { sidebarButton(width: geometry.size.width) }
-                    }
-                    .frame(width: 380)
-                    Divider()
-                }
-
-                NavigationStack(path: $router.path) {
-                    Group {
-                        if wideLayout && store.feedState == .loading {
-                            ProgressView("Loading feed…")
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if wideLayout {
-                            ContentUnavailableView(
-                                "Select a post",
-                                systemImage: "text.bubble",
-                                description: Text("Choose a post to read it and its comments here.")
-                            )
-                        } else {
-                            selectedFeedView
-                                .toolbar { sidebarButton(width: geometry.size.width) }
-                        }
-                    }
-                    .navigationDestination(for: FeatureRoute.self) { route in
-                        OctonautDestinationView(route: route, store: store, router: router)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .sheet(isPresented: $showingCommunities) {
-                NavigationStack {
-                    PostsRootView(
-                        store: store,
-                        router: router,
-                        onSelectFeed: { descriptor in
-                            selectFeed(descriptor)
-                            showingCommunities = false
-                        },
-                        selectedFeed: state.selectedFeed
-                    )
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showingCommunities = false }
-                        }
-                    }
-                }
+            if geometry.size.width >= 1100 {
+                threeColumnLayout
+            } else {
+                twoColumnLayout
             }
         }
     }
 
+    private var twoColumnLayout: some View {
+        @Bindable var router = router
+
+        return NavigationSplitView {
+            PostsRootView(
+                store: store,
+                router: router,
+                onSelectFeed: selectFeed,
+                selectedFeed: state.selectedFeed
+            )
+            .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
+        } detail: {
+            NavigationStack(path: $router.path) {
+                selectedFeedView
+                    .navigationDestination(for: FeatureRoute.self) { route in
+                        OctonautDestinationView(route: route, store: store, router: router)
+                    }
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    private var threeColumnLayout: some View {
+        @Bindable var router = router
+
+        return HStack(spacing: 0) {
+            if sidebarVisible {
+                NavigationStack {
+                    PostsRootView(
+                        store: store,
+                        router: router,
+                        onSelectFeed: selectFeed,
+                        selectedFeed: state.selectedFeed
+                    )
+                }
+                .frame(width: 240)
+                Divider()
+            }
+
+            NavigationStack {
+                selectedFeedView
+                    .toolbar { sidebarButton }
+            }
+            .frame(width: 380)
+            Divider()
+
+            NavigationStack(path: $router.path) {
+                Group {
+                    if store.feedState == .loading {
+                        ProgressView("Loading feed…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ContentUnavailableView(
+                            "Select a post",
+                            systemImage: "text.bubble",
+                            description: Text("Choose a post to read it and its comments here.")
+                        )
+                    }
+                }
+                .navigationDestination(for: FeatureRoute.self) { route in
+                    OctonautDestinationView(route: route, store: store, router: router)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
     @ToolbarContentBuilder
-    private func sidebarButton(width: CGFloat) -> some ToolbarContent {
+    private var sidebarButton: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Button {
-                if width < 900 {
-                    showingCommunities = true
-                } else {
-                    sidebarVisible.toggle()
-                }
+                sidebarVisible.toggle()
             } label: {
                 Image(systemName: "sidebar.left")
             }
@@ -559,7 +595,7 @@ private struct SubredditSidebarView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Button {
-                        router.presentedSheet = .composer(.post)
+                        router.presentedSheet = .composer(.post, community: name)
                     } label: {
                         Label("Create a post", systemImage: "square.and.pencil")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -655,7 +691,7 @@ private struct AdaptiveSettingsTabView: View {
     var body: some View {
         @Bindable var router = router
 
-        if horizontalSizeClass == .regular {
+        if OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: horizontalSizeClass) {
             SettingsSplitView(store: store, router: router)
         } else {
             NavigationStack(path: $router.path) {
@@ -738,6 +774,8 @@ struct OctonautDestinationView: View {
             ConversationView(itemID: id, store: store, router: router)
         case .account(let username):
             UserProfileView(username: username, store: store, router: router)
+        case .userSection(let username, let section):
+            UserSectionView(username: username, section: section, store: store)
         case .settings(let destination):
             SettingsDetailView(destination: destination, store: store, router: router)
         case .composer(let kind):

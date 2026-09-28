@@ -4,6 +4,20 @@ struct AppRootView: View {
     @Environment(AppDependencies.self) private var dependencies
 
     var body: some View {
+#if DEBUG
+        if ProcessInfo.processInfo.environment["OCTONAUT_SCREENSHOT"] == "media" {
+            OctonautMediaViewer(post: .screenshotGallery)
+        } else if ProcessInfo.processInfo.environment["OCTONAUT_SCREENSHOT"] != nil {
+            OctonautTabsView(store: OctonautFeatureStore(screenshotMode: true))
+        } else {
+            liveTabs
+        }
+#else
+        liveTabs
+#endif
+    }
+
+    private var liveTabs: some View {
         OctonautTabsView(
             store: OctonautFeatureStore(
                 reddit: dependencies.reddit,

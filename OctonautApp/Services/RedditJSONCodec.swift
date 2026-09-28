@@ -199,6 +199,8 @@ enum RedditJSONCodec {
             media = .gallery(items: galleryItems)
         } else if let video = videoMedia(object, targetURL: targetURL) {
             media = video
+        } else if let animated = animatedImageMedia(object, targetURL: targetURL) {
+            media = animated
         } else if let bodyVideo {
             media = bodyVideo
         } else if let image = imageMedia(object, targetURL: targetURL, postHint: postHint) {
@@ -643,6 +645,55 @@ enum RedditJSONCodec {
             thumbnailURL: thumbnail(object),
             isGIF: false
         )
+    }
+
+    /// Reddit keeps animated posts at a `.gif` URL but also generates an H.264
+    /// copy under `preview.images[].variants.mp4`. `UIImage` decodes only a
+    /// GIF's first frame, so the mp4 variant is what actually animates. Resolve
+    /// these to looping video and let the existing video path play them.
+    private static func animatedImageMedia(
+        _ object: [String: RedditJSONValue],
+        targetURL: URL?
+    ) -> PostMedia? {
+        for (index, candidate) in mediaCandidates(object).enumerated() {
+            let candidateURL = url(candidate["url_overridden_by_dest"]?.stringValue)
+                ?? url(candidate["url"]?.stringValue)
+                ?? (index == 0 ? targetURL : nil)
+            guard let candidateURL, isAnimatedImageURL(candidateURL) else { continue }
+
+            // A post with no mp4 variant falls through to the image path, which
+            // still renders the first frame rather than nothing.
+            guard let playableURL = animatedVariantURL(candidate)
+                ?? animatedVariantURL(object)
+                ?? animatedURLBySubstitution(candidateURL) else { continue }
+
+            return .video(
+                url: playableURL,
+                audioURL: nil,
+                thumbnailURL: thumbnail(candidate) ?? thumbnail(object),
+                isGIF: true
+            )
+        }
+        return nil
+    }
+
+    private static func isAnimatedImageURL(_ url: URL) -> Bool {
+        ["gif", "gifv"].contains(url.pathExtension.lowercased())
+    }
+
+    private static func animatedVariantURL(_ object: [String: RedditJSONValue]) -> URL? {
+        let variants = object["preview"]?.objectValue?["images"]?.arrayValue?.first?
+            .objectValue?["variants"]?.objectValue
+        return url(variants?["mp4"]?.objectValue?["source"]?.objectValue?["url"]?.stringValue)
+    }
+
+    /// Imgur serves an mp4 for every animated upload at the same path.
+    private static func animatedURLBySubstitution(_ url: URL) -> URL? {
+        guard let host = url.host?.lowercased(),
+              host == "i.imgur.com" || host == "imgur.com" else { return nil }
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.path = (url.path as NSString).deletingPathExtension + ".mp4"
+        return components?.url
     }
 
     private static func previewImageURL(_ object: [String: RedditJSONValue]) -> URL? {

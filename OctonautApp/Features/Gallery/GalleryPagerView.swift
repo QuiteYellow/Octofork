@@ -20,13 +20,14 @@ struct GalleryMediaItem: Identifiable {
 @MainActor
 struct GalleryMediaTile: View {
     let item: GalleryMediaItem
-    var blurNSFW = true
+    var blursNSFW = true
+    var blursSpoilers = true
     let onOpen: () -> Void
     @State private var image: UIImage?
     @State private var failed = false
 
     private var isBlurred: Bool {
-        item.post.isSpoiler || (item.post.isNSFW && blurNSFW)
+        item.post.isSensitive(blurringNSFW: blursNSFW, blurringSpoilers: blursSpoilers)
     }
 
     private var aspectRatio: CGFloat {

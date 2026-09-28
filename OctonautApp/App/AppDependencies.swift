@@ -11,9 +11,17 @@ final class AppDependencies {
     let persistence: any PersistenceStore
     let media: any MediaService
     let intelligence: any IntelligenceService
+    let summaryCache = InMemorySummaryCache(lifetime: 24 * 60 * 60, capacity: 100)
     let summaryAPIKeyStore: any SummaryAPIKeyStore
     let links: any LinkRouter
     let settings: SettingsStore
+    var summaryCacheModelFamily: String {
+        switch settings.summaryProvider {
+        case .onDevice: "on-device"
+        case .openAICompatible: "\(settings.summaryEndpoint)|\(settings.summaryModel)"
+        }
+    }
+    private(set) var resetGeneration: UInt = 0
 
     init(
         router: AppRouter = AppRouter(),
@@ -37,6 +45,42 @@ final class AppDependencies {
         self.summaryAPIKeyStore = summaryAPIKeyStore
         self.links = links
         self.settings = settings
+    }
+
+    func resetAllData() async throws {
+        var failedAreas: [String] = []
+
+        do {
+            try await accounts.removeAll()
+        } catch {
+            failedAreas.append("Reddit credentials")
+        }
+        do {
+            try await summaryAPIKeyStore.removeAPIKey()
+        } catch {
+            failedAreas.append("summary API key")
+        }
+        do {
+            try await persistence.removeAllData()
+        } catch {
+            failedAreas.append("saved app data")
+        }
+
+        settings.removeAllData()
+        RedditResponseCache.removeAll()
+        await summaryCache.removeAll()
+        URLCache.shared.removeAllCachedResponses()
+        await SubscribedCommunitiesCache.shared.removeAll()
+        await UserProfileCache.shared.removeAll()
+#if os(iOS)
+        await OctonautImageCache.removeAll()
+#endif
+        await accounts.load()
+
+        if !failedAreas.isEmpty {
+            throw AppResetError(failedAreas: failedAreas)
+        }
+        resetGeneration &+= 1
     }
 
     static func live() -> AppDependencies {
@@ -110,5 +154,13 @@ final class AppDependencies {
             links: DefaultLinkRouter(),
             settings: SettingsStore(defaults: UserDefaults(suiteName: "com.ledwardchow.Octonaut.preview") ?? .standard)
         )
+    }
+}
+
+struct AppResetError: LocalizedError, Equatable {
+    let failedAreas: [String]
+
+    var errorDescription: String? {
+        "Octonaut could not remove: \(failedAreas.joined(separator: ", ")). Try the reset again."
     }
 }

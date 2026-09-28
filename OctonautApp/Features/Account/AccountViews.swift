@@ -7,6 +7,12 @@ struct AccountRootView: View {
     @Environment(AppDependencies.self) private var dependencies
     @State private var showingAddAccount = false
 
+    private var navigationTitle: String {
+        guard dependencies.settings.showUsernameInAccountTab,
+              let username = dependencies.accounts.selectedAccount?.username else { return "Accounts" }
+        return username
+    }
+
     var body: some View {
         Group {
             if let account = dependencies.accounts.selectedAccount, account.health == .needsLogin {
@@ -17,7 +23,7 @@ struct AccountRootView: View {
                 AccountManagerView(store: store) { showingAddAccount = true }
             }
         }
-        .navigationTitle(dependencies.accounts.selectedAccount?.username ?? "Accounts")
+        .navigationTitle(navigationTitle)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -137,9 +143,34 @@ struct UserProfileView: View {
     @State private var showingLogin = false
     @State private var selectedSection: ProfileSection = .posts
 
+    /// Reddit serves Saved, Upvoted, Downvoted, and Hidden only to the account
+    /// that owns them, so the rows appear on your own profile and nowhere else.
+    private var isOwnProfile: Bool {
+        guard let account = dependencies.accounts.selectedAccount, account.health == .healthy else {
+            return false
+        }
+        return account.username.caseInsensitiveCompare(username) == .orderedSame
+    }
+
+    private var privateSections: [UserSection] {
+        UserSection.allCases.filter(\.isPrivateToOwner)
+    }
+
     var body: some View {
         List {
             profileHeader
+
+            if isOwnProfile {
+                Section {
+                    ForEach(privateSections, id: \.self) { section in
+                        NavigationLink(value: FeatureRoute.userSection(username: username, section: section)) {
+                            Label(section.title, systemImage: section.systemImage)
+                        }
+                    }
+                } header: {
+                    OctonautSectionHeader("Your activity")
+                }
+            }
 
             switch store.userProfileState {
             case .idle, .loading:
@@ -267,7 +298,9 @@ struct UserProfileView: View {
                     NavigationLink(value: FeatureRoute.post(post)) {
                         OctonautCompactPostRow(
                             post: post,
-                            showsFlair: dependencies.settings.showPostFlair
+                            showsFlair: dependencies.settings.showPostFlair,
+                            blursNSFW: dependencies.settings.blurNSFWMedia,
+                            blursSpoilers: dependencies.settings.blurSpoilers
                         )
                     }
                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))
@@ -333,6 +366,206 @@ private struct UserCommentProfileRow: View {
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Comment on \(comment.postTitle), \(comment.body)")
+    }
+}
+
+/// One profile section listing: Saved, Upvoted, Downvoted, or Hidden. The rows
+/// live here rather than on the store so pushing a second section on top of a
+/// first cannot replace what is underneath it.
+@MainActor
+struct UserSectionView: View {
+    let username: String
+    let section: UserSection
+    let store: OctonautFeatureStore
+    @Environment(AppDependencies.self) private var dependencies
+    @State private var content: UserSectionContent = .posts
+    @State private var loadedContent: UserSectionContent?
+    @State private var posts: [PostCardModel] = []
+    @State private var comments: [UserCommentCardModel] = []
+    @State private var nextPage: String?
+    @State private var state: OctonautLoadState = .idle
+    @State private var isLoadingMore = false
+    @State private var actionError: String?
+
+    private var offersContentPicker: Bool { section == .saved }
+
+    private var emptyMessage: String {
+        switch (section, content) {
+        case (.saved, .posts): return "Posts you save appear here."
+        case (.saved, .comments): return "Comments you save appear here."
+        case (.upvoted, _): return "Posts you upvote appear here."
+        case (.downvoted, _): return "Posts you downvote appear here."
+        case (.hidden, _): return "Posts you hide appear here."
+        default: return "Nothing to show."
+        }
+    }
+
+    var body: some View {
+        List {
+            if offersContentPicker {
+                Picker("Show", selection: $content) {
+                    ForEach(UserSectionContent.allCases) { value in
+                        Text(value.rawValue).tag(value)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .listRowSeparator(.hidden)
+                .accessibilityLabel("Saved content kind")
+            }
+
+            switch state {
+            case .idle, .loading:
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Loading \(section.title.lowercased())…")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            case .failed(let message):
+                ContentUnavailableView {
+                    Label("\(section.title) unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message)
+                } actions: {
+                    Button("Retry") { Task { await load(forceRefresh: true) } }
+                        .buttonStyle(.borderedProminent)
+                }
+            case .empty:
+                Text(emptyMessage)
+                    .foregroundStyle(.secondary)
+            case .loaded:
+                rows
+                if nextPage != nil {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .onAppear { Task { await loadMore() } }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .navigationTitle(section.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .refreshable { await load(forceRefresh: true) }
+        .task(id: taskID) { await load() }
+        .alert(
+            "Reddit could not be updated",
+            isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
+        ) {
+            Button("OK", role: .cancel) { actionError = nil }
+        } message: {
+            Text(actionError ?? "")
+        }
+    }
+
+    private var taskID: String {
+        "\(username):\(section.rawValue):\(content.rawValue):\(store.accountContextKey)"
+    }
+
+    @ViewBuilder
+    private var rows: some View {
+        switch content {
+        case .posts:
+            ForEach(posts) { post in
+                NavigationLink(value: FeatureRoute.post(post)) {
+                    OctonautCompactPostRow(
+                        post: post,
+                        showsFlair: dependencies.settings.showPostFlair,
+                        blursNSFW: dependencies.settings.blurNSFWMedia,
+                        blursSpoilers: dependencies.settings.blurSpoilers
+                    )
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))
+                .swipeActions(edge: .trailing) {
+                    if section == .saved {
+                        Button("Unsave", systemImage: "bookmark.slash", role: .destructive) {
+                            unsave(post)
+                        }
+                    }
+                }
+            }
+        case .comments:
+            ForEach(comments) { comment in
+                if let postURL = comment.postURL {
+                    NavigationLink(value: FeatureRoute.postURL(postURL)) {
+                        UserCommentProfileRow(comment: comment)
+                    }
+                } else {
+                    UserCommentProfileRow(comment: comment)
+                }
+            }
+        }
+    }
+
+    private func load(forceRefresh: Bool = false) async {
+        if loadedContent != content {
+            // Posts and comments are different rows; do not leave one kind on
+            // screen while the other loads.
+            posts = []
+            comments = []
+            nextPage = nil
+            state = .loading
+        } else if state != .loaded {
+            state = .loading
+        }
+        do {
+            let page = try await store.fetchUserSection(
+                section, username: username, content: content, forceRefresh: forceRefresh)
+            guard !Task.isCancelled else { return }
+            posts = page.posts
+            comments = page.comments
+            nextPage = page.nextPage
+            loadedContent = content
+            state = (content == .posts ? posts.isEmpty : comments.isEmpty) ? .empty : .loaded
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    private func loadMore() async {
+        guard let after = nextPage, !isLoadingMore else { return }
+        isLoadingMore = true
+        defer { isLoadingMore = false }
+        do {
+            let page = try await store.fetchUserSection(
+                section, username: username, content: content, after: after)
+            guard !Task.isCancelled, nextPage == after else { return }
+            let existingPosts = Set(posts.map(\.id))
+            posts.append(contentsOf: page.posts.filter { !existingPosts.contains($0.id) })
+            let existingComments = Set(comments.map(\.id))
+            comments.append(contentsOf: page.comments.filter { !existingComments.contains($0.id) })
+            nextPage = page.nextPage
+        } catch {
+            // Keep the rows that did arrive; pagination stops until the next pull.
+            nextPage = nil
+        }
+    }
+
+    private func unsave(_ post: PostCardModel) {
+        guard let accountID = dependencies.accounts.selectedAccountID else { return }
+        let token = dependencies.accounts.token(for: accountID)
+        let removed = posts
+        posts.removeAll { $0.id == post.id }
+        if posts.isEmpty { state = .empty }
+        Task {
+            do {
+                try await store.setSaved(false, postID: post.id, accountID: accountID)
+            } catch let error as RedditClientError where error == .authenticationRequired {
+                guard dependencies.accounts.isCurrent(token) else { return }
+                await dependencies.accounts.markNeedsLogin(accountID)
+                posts = removed
+                state = .loaded
+            } catch {
+                posts = removed
+                state = .loaded
+                actionError = error.localizedDescription
+            }
+        }
     }
 }
 

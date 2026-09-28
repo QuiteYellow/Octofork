@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UIKit
 
 private actor OctonautImageDataCache {
@@ -80,6 +81,13 @@ private actor OctonautImageDataCache {
 
 @MainActor
 enum OctonautImageCache {
+    /// Reddit's preview hosts routinely serve 3000-4000px sources. Decoding one
+    /// at full size costs roughly 24MB of RAM, and because `UIImage(data:)`
+    /// defers the decode to draw time on the main thread, that cost lands in the
+    /// middle of a scroll. Downsampling to a cap that still covers a zoomed
+    /// full-screen view keeps the feed smooth without a visible quality loss.
+    static let defaultMaxPixelSize = 2048
+
     private static let decodedImages: NSCache<NSURL, UIImage> = {
         let cache = NSCache<NSURL, UIImage>()
         cache.totalCostLimit = 96 * 1_024 * 1_024
@@ -93,13 +101,60 @@ enum OctonautImageCache {
 
         let data = try await OctonautImageDataCache.shared.data(for: url)
         guard !Task.isCancelled else { throw CancellationError() }
-        guard let image = UIImage(data: data) else { throw URLError(.cannotDecodeContentData) }
-        decodedImages.setObject(image, forKey: url as NSURL, cost: data.count)
+        let image = try await decoded(data: data, maxPixelSize: defaultMaxPixelSize)
+        guard !Task.isCancelled else { throw CancellationError() }
+        decodedImages.setObject(image, forKey: url as NSURL, cost: image.decodedByteCount)
         return image
     }
 
+    private static func decoded(data: Data, maxPixelSize: Int) async throws -> UIImage {
+        try await Task.detached(priority: .userInitiated) {
+            try decodeOffMainThread(data: data, maxPixelSize: maxPixelSize)
+        }.value
+    }
+
+    /// Produces a fully decoded, downsampled image so the render pass has no
+    /// work left to do. `kCGImageSourceShouldCacheImmediately` forces the
+    /// decode here, on this background thread, rather than at draw time.
+    nonisolated private static func decodeOffMainThread(
+        data: Data,
+        maxPixelSize: Int
+    ) throws -> UIImage {
+        guard let source = CGImageSourceCreateWithData(
+            data as CFData,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(
+            source, 0, options as CFDictionary
+        ) else {
+            // Some formats refuse the thumbnail path; keep the original decode.
+            guard let image = UIImage(data: data) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            return image
+        }
+
+        return UIImage(cgImage: cgImage)
+    }
+
     static func cachedImage(for url: URL) -> UIImage? {
-        decodedImages.object(forKey: url as NSURL)
+#if DEBUG
+        if url.scheme == "octonaut-screenshot", let name = url.host,
+           let path = Bundle.main.path(forResource: name, ofType: "png") {
+            return UIImage(contentsOfFile: path)
+        }
+#endif
+        return decodedImages.object(forKey: url as NSURL)
     }
 
     static func configure(diskCapacityMB: Int) async {
@@ -113,5 +168,16 @@ enum OctonautImageCache {
     static func removeAll() async {
         decodedImages.removeAllObjects()
         await OctonautImageDataCache.shared.removeAll()
+    }
+}
+
+private extension UIImage {
+    /// `NSCache` budgets against whatever cost it is handed. Charging the
+    /// compressed byte count for a decoded bitmap understates the real
+    /// footprint by roughly 50x, so the cache overshoots its limit, hits system
+    /// memory pressure, and gets purged wholesale mid-scroll.
+    var decodedByteCount: Int {
+        guard let cgImage else { return 1 }
+        return max(cgImage.bytesPerRow * cgImage.height, 1)
     }
 }

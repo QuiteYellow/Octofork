@@ -18,6 +18,7 @@ actor FixtureRedditClient: RedditClient {
     private let subscribedCommunitiesDelay: Duration?
     private(set) var lastListingRequest: ListingRequest?
     private var listingRequestCount = 0
+    private var postRequestCount = 0
     private var subscribedCommunitiesRequestCount = 0
 
     init(
@@ -86,12 +87,15 @@ actor FixtureRedditClient: RedditClient {
     }
 
     func post(_ permalink: URL, sort: CommentSort, account: AccountID? = nil) async throws -> PostThread {
+        postRequestCount += 1
         if let postDelay {
             try await Task.sleep(for: postDelay)
         }
         guard let postData else { throw RedditClientError.notFound }
         return try RedditJSONCodec.decodeThread(postData)
     }
+
+    func postRequests() -> Int { postRequestCount }
 
     func moreComments(
         postFullname: String,
@@ -155,7 +159,12 @@ actor FixtureRedditClient: RedditClient {
         )
     }
 
-    func userComments(_ username: String, after: String? = nil, account: AccountID? = nil) async throws -> Listing<UserComment> {
+    func userComments(
+        _ username: String,
+        section: UserSection = .comments,
+        after: String? = nil,
+        account: AccountID? = nil
+    ) async throws -> Listing<UserComment> {
         Listing(items: [])
     }
 

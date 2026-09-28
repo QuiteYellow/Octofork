@@ -160,10 +160,29 @@ final class SettingsStore {
     var feedLayout: FeedLayout { didSet { persist(feedLayout.rawValue, key: Keys.feedLayout) } }
     var compactThumbnailSide: CompactThumbnailSide { didSet { persist(compactThumbnailSide.rawValue, key: Keys.compactThumbnailSide) } }
     var useSplitViewOnIPad: Bool { didSet { persist(useSplitViewOnIPad, key: Keys.useSplitViewOnIPad) } }
+    var showBottomNavigationOnLargeScreens: Bool { didSet { persist(showBottomNavigationOnLargeScreens, key: Keys.showBottomNavigationOnLargeScreens) } }
     var showCommunityHeader: Bool { didSet { persist(showCommunityHeader, key: Keys.showCommunityHeader) } }
     var showCommunityIcons: Bool { didSet { persist(showCommunityIcons, key: Keys.showCommunityIcons) } }
-    var selfTextPreviewLines: Int { didSet { selfTextPreviewLines = min(max(selfTextPreviewLines, 0), 20); persist(selfTextPreviewLines, key: Keys.selfTextPreviewLines) } }
-    var linkDescriptionLines: Int { didSet { linkDescriptionLines = min(max(linkDescriptionLines, 0), 20); persist(linkDescriptionLines, key: Keys.linkDescriptionLines) } }
+    var selfTextPreviewLines: Int {
+        didSet {
+            let clampedValue = min(max(selfTextPreviewLines, 0), 20)
+            guard selfTextPreviewLines == clampedValue else {
+                selfTextPreviewLines = clampedValue
+                return
+            }
+            persist(selfTextPreviewLines, key: Keys.selfTextPreviewLines)
+        }
+    }
+    var linkDescriptionLines: Int {
+        didSet {
+            let clampedValue = min(max(linkDescriptionLines, 0), 20)
+            guard linkDescriptionLines == clampedValue else {
+                linkDescriptionLines = clampedValue
+                return
+            }
+            persist(linkDescriptionLines, key: Keys.linkDescriptionLines)
+        }
+    }
     var showPostFlair: Bool { didSet { persist(showPostFlair, key: Keys.showPostFlair) } }
     var blurSpoilers: Bool { didSet { persist(blurSpoilers, key: Keys.blurSpoilers) } }
     var blurNSFWMedia: Bool { didSet { persist(blurNSFWMedia, key: Keys.blurNSFWMedia) } }
@@ -207,6 +226,7 @@ final class SettingsStore {
     var restoreLastScreen: Bool { didSet { persist(restoreLastScreen, key: Keys.restoreLastScreen) } }
     var refreshVisibleFeedOnLaunch: RefreshVisibleFeedPolicy { didSet { persist(refreshVisibleFeedOnLaunch.rawValue, key: Keys.refreshVisibleFeedOnLaunch) } }
 
+    var showUsernameInAccountTab: Bool { didSet { persist(showUsernameInAccountTab, key: Keys.showUsernameInAccountTab) } }
     var confirmAccountSwitchWhileComposing: Bool { didSet { persist(confirmAccountSwitchWhileComposing, key: Keys.confirmAccountSwitchWhileComposing) } }
     var refreshAccountIdentityOnForegroundHours: Int { didSet { persist(refreshAccountIdentityOnForegroundHours, key: Keys.refreshAccountIdentityOnForegroundHours) } }
     var collectLocalUsageStatistics: Bool { didSet { persist(collectLocalUsageStatistics, key: Keys.collectLocalUsageStatistics) } }
@@ -246,7 +266,9 @@ final class SettingsStore {
         feedCloudObserver = NotificationCenter.default.publisher(
             for: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
             object: NSUbiquitousKeyValueStore.default
-        ).sink { [weak self] notification in
+        )
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] notification in
             let reason = notification.userInfo?[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -332,6 +354,7 @@ final class SettingsStore {
         feedLayout = FeedLayout(rawValue: defaults.string(forKey: Keys.feedLayout) ?? "full") ?? .full
         compactThumbnailSide = CompactThumbnailSide(rawValue: defaults.string(forKey: Keys.compactThumbnailSide) ?? "left") ?? .left
         useSplitViewOnIPad = defaults.object(forKey: Keys.useSplitViewOnIPad) as? Bool ?? true
+        showBottomNavigationOnLargeScreens = defaults.object(forKey: Keys.showBottomNavigationOnLargeScreens) as? Bool ?? false
         showCommunityHeader = defaults.object(forKey: Keys.showCommunityHeader) as? Bool ?? true
         showCommunityIcons = defaults.object(forKey: Keys.showCommunityIcons) as? Bool ?? true
         selfTextPreviewLines = defaults.object(forKey: Keys.selfTextPreviewLines) as? Int ?? 3
@@ -373,6 +396,7 @@ final class SettingsStore {
         startupPostsDestination = defaults.data(forKey: Keys.startupPostsDestination).flatMap { try? JSONDecoder().decode(FeedDestination.self, from: $0) } ?? .home
         restoreLastScreen = defaults.object(forKey: Keys.restoreLastScreen) as? Bool ?? false
         refreshVisibleFeedOnLaunch = RefreshVisibleFeedPolicy(rawValue: defaults.string(forKey: Keys.refreshVisibleFeedOnLaunch) ?? "ifStale") ?? .ifStale
+        showUsernameInAccountTab = defaults.object(forKey: Keys.showUsernameInAccountTab) as? Bool ?? true
         confirmAccountSwitchWhileComposing = defaults.object(forKey: Keys.confirmAccountSwitchWhileComposing) as? Bool ?? true
         refreshAccountIdentityOnForegroundHours = defaults.object(forKey: Keys.refreshAccountIdentityOnForegroundHours) as? Int ?? 24
         collectLocalUsageStatistics = defaults.object(forKey: Keys.collectLocalUsageStatistics) as? Bool ?? true
@@ -390,6 +414,7 @@ final class SettingsStore {
         feedLayout = fresh.feedLayout
         compactThumbnailSide = fresh.compactThumbnailSide
         useSplitViewOnIPad = fresh.useSplitViewOnIPad
+        showBottomNavigationOnLargeScreens = fresh.showBottomNavigationOnLargeScreens
         showCommunityHeader = fresh.showCommunityHeader
         showCommunityIcons = fresh.showCommunityIcons
         selfTextPreviewLines = fresh.selfTextPreviewLines
@@ -431,6 +456,7 @@ final class SettingsStore {
         startupPostsDestination = fresh.startupPostsDestination
         restoreLastScreen = fresh.restoreLastScreen
         refreshVisibleFeedOnLaunch = fresh.refreshVisibleFeedOnLaunch
+        showUsernameInAccountTab = fresh.showUsernameInAccountTab
         confirmAccountSwitchWhileComposing = fresh.confirmAccountSwitchWhileComposing
         refreshAccountIdentityOnForegroundHours = fresh.refreshAccountIdentityOnForegroundHours
         collectLocalUsageStatistics = fresh.collectLocalUsageStatistics
@@ -440,6 +466,26 @@ final class SettingsStore {
         gestureHaptics = fresh.gestureHaptics
         configurationRevision = 0
         filterRevision = 0
+    }
+
+    func removeAllData() {
+        if let feedCloud {
+            for key in feedCloud.values.keys {
+                feedCloud.removeObject(forKey: key)
+            }
+            _ = feedCloud.synchronize()
+        }
+
+        applyingCloudFeeds = true
+        customFeeds = []
+        applyingCloudFeeds = false
+        feedVersions = [:]
+        customFeedSyncStatus = "Syncs with iCloud when available."
+
+        for key in defaults.dictionaryRepresentation().keys {
+            defaults.removeObject(forKey: key)
+        }
+        resetToDefaults()
     }
 
     /// Applies availability-based defaults only when the user has not already
@@ -460,6 +506,7 @@ final class SettingsStore {
         static let feedLayout = "appearance.feedLayout"
         static let compactThumbnailSide = "appearance.compactThumbnailSide"
         static let useSplitViewOnIPad = "appearance.useSplitViewOnIPad"
+        static let showBottomNavigationOnLargeScreens = "appearance.showBottomNavigationOnLargeScreens"
         static let showCommunityHeader = "appearance.showCommunityHeader"
         static let showCommunityIcons = "appearance.showCommunityIcons"
         static let selfTextPreviewLines = "appearance.selfTextPreviewLines"
@@ -501,6 +548,9 @@ final class SettingsStore {
         static let startupPostsDestination = "startup.postsDestination"
         static let restoreLastScreen = "startup.restoreLastScreen"
         static let refreshVisibleFeedOnLaunch = "startup.refreshVisibleFeedOnLaunch"
+        /// Named for the `@AppStorage` key this setting used before it moved
+        /// here, so an existing choice carries over.
+        static let showUsernameInAccountTab = "appearance.showUsername"
         static let confirmAccountSwitchWhileComposing = "accounts.confirmSwitchWhileComposing"
         static let refreshAccountIdentityOnForegroundHours = "accounts.refreshIdentityHours"
         static let collectLocalUsageStatistics = "privacy.collectLocalUsageStatistics"
@@ -558,6 +608,7 @@ struct CustomFeedSyncRecord: Codable, Equatable {
 protocol CustomFeedCloudStore {
     var values: [String: Data] { get }
     func set(_ data: Data, forKey key: String)
+    func removeObject(forKey key: String)
     func synchronize() -> Bool
 }
 
@@ -572,5 +623,6 @@ private final class ICloudCustomFeedStore: CustomFeedCloudStore {
         }
     }
     func set(_ data: Data, forKey key: String) { store.set(data, forKey: key) }
+    func removeObject(forKey key: String) { store.removeObject(forKey: key) }
     func synchronize() -> Bool { store.synchronize() }
 }

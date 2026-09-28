@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct OctonautMacApp: App {
+    @AppStorage(AppIconChoice.preferenceKey) private var appIconChoice = AppIconChoice.original.rawValue
     @State private var dependencies: AppDependencies
 
     init() {
@@ -12,6 +13,9 @@ struct OctonautMacApp: App {
         WindowGroup("Octonaut") {
             MacRootView(dependencies: dependencies)
                 .environment(dependencies)
+                .onAppear { AppIconChoice.applyDockIcon(appIconChoice) }
+                .onChange(of: appIconChoice) { _, value in AppIconChoice.applyDockIcon(value) }
+                .id(dependencies.resetGeneration)
                 .frame(minWidth: 900, minHeight: 620)
         }
         .defaultSize(width: 1240, height: 780)

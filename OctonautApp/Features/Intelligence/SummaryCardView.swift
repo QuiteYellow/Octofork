@@ -15,6 +15,8 @@ struct SummaryCardView: View {
     let title: String
     let input: SummaryInput
     let intelligence: any IntelligenceService
+    let cache: InMemorySummaryCache
+    let modelFamily: String
     let automatic: Bool
     let useFallback: Bool
 
@@ -45,6 +47,18 @@ struct SummaryCardView: View {
                 return DeterministicExcerptEngine.excerpts(title: "", body: body)
             }
         }
+
+        func cacheKey(modelFamily: String) -> SummaryCacheKey {
+            switch self {
+            case .post(let input):
+                return SummaryCacheKey(contentID: "post:\(input.id)", title: input.title,
+                                       body: input.body, modelFamily: modelFamily)
+            case .comments(let input):
+                let body = input.comments.map { "\($0.id):\($0.text)" }.joined(separator: "\n\n")
+                return SummaryCacheKey(contentID: "comments:\(input.postID)", title: "",
+                                       body: body, modelFamily: modelFamily)
+            }
+        }
     }
 
     var body: some View {
@@ -57,7 +71,6 @@ struct SummaryCardView: View {
                     Label(title, systemImage: "sparkles")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    if case .loading = state { ProgressView().controlSize(.small) }
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.caption.weight(.bold))
                 }
@@ -73,9 +86,14 @@ struct SummaryCardView: View {
         .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal)
         .padding(.top, 10)
-        .task(id: input.id) {
+        .task(id: "\(input.id):\(modelFamily)") {
             state = .idle
             hasRequested = false
+            if let cached = await cache.value(for: input.cacheKey(modelFamily: modelFamily)) {
+                state = .summary(cached)
+                hasRequested = true
+                return
+            }
             guard automatic, !hasRequested else { return }
             await requestSummary()
         }
@@ -153,6 +171,11 @@ struct SummaryCardView: View {
     private func requestSummary(force: Bool = false) async {
         if hasRequested && !force { return }
         hasRequested = true
+        let key = input.cacheKey(modelFamily: modelFamily)
+        if !force, let cached = await cache.value(for: key) {
+            state = .summary(cached)
+            return
+        }
         state = .loading
         do {
             let result: ContentSummary
@@ -161,6 +184,7 @@ struct SummaryCardView: View {
             case .comments(let value): result = try await intelligence.summarizeComments(value)
             }
             guard !Task.isCancelled else { return }
+            await cache.insert(result, for: key)
             state = .summary(result)
         } catch let error as IntelligenceError {
             guard !Task.isCancelled else { return }

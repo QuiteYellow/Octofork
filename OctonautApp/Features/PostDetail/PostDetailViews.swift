@@ -77,7 +77,7 @@ struct PostDetailView: View {
                             Text("Comments could not be loaded").font(.subheadline.weight(.semibold))
                             Text(message).font(.caption).foregroundStyle(.secondary)
                             Button("Retry") {
-                                Task { await store.loadPostDetail(for: currentPost, sort: commentSort) }
+                                Task { await store.loadPostDetail(for: currentPost, sort: commentSort, forceRefresh: true) }
                             }
                             .font(.caption.weight(.semibold))
                         }
@@ -98,6 +98,8 @@ struct PostDetailView: View {
                             PostSummaryInput(id: currentPost.id, title: currentPost.title, body: currentPost.body)
                         ),
                         intelligence: dependencies.intelligence,
+                        cache: dependencies.summaryCache,
+                        modelFamily: dependencies.summaryCacheModelFamily,
                         automatic: dependencies.settings.automaticVisibleSummaries,
                         useFallback: dependencies.settings.keyExcerptsFallback
                     )
@@ -111,6 +113,8 @@ struct PostDetailView: View {
                             CommentSummaryInput(postID: currentPost.id, comments: summaryComments)
                         ),
                         intelligence: dependencies.intelligence,
+                        cache: dependencies.summaryCache,
+                        modelFamily: dependencies.summaryCacheModelFamily,
                         automatic: dependencies.settings.automaticCommentSummaries,
                         useFallback: dependencies.settings.keyExcerptsFallback
                     )
@@ -348,8 +352,15 @@ struct GalleryView: View {
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
 
+    @Environment(AppDependencies.self) private var dependencies
     @State private var selectedItem: GalleryMediaItem?
-    @State private var blurNSFW = true
+    /// A per-visit override of the blur preferences, so the toolbar button can
+    /// unblur this grid without changing the saved setting.
+    @State private var revealsSensitiveMedia = false
+
+    private var blursSensitiveMedia: Bool {
+        dependencies.settings.blurNSFWMedia || dependencies.settings.blurSpoilers
+    }
 
     private var items: [GalleryMediaItem] {
         GalleryMediaItem.items(from: store.posts.filter {
@@ -364,7 +375,11 @@ struct GalleryView: View {
                     ForEach(0..<2) { column in
                         LazyVStack(spacing: 4) {
                             ForEach(Array(items.enumerated()).filter { $0.offset % 2 == column }.map(\.element)) { item in
-                                GalleryMediaTile(item: item, blurNSFW: blurNSFW) { selectedItem = item }
+                                GalleryMediaTile(
+                                    item: item,
+                                    blursNSFW: dependencies.settings.blurNSFWMedia && !revealsSensitiveMedia,
+                                    blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia
+                                ) { selectedItem = item }
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -402,20 +417,22 @@ struct GalleryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    blurNSFW.toggle()
-                } label: {
-                    Label("NSFW blur", systemImage: blurNSFW ? "eye.slash" : "eye")
+                if blursSensitiveMedia {
+                    Button {
+                        revealsSensitiveMedia.toggle()
+                    } label: {
+                        Label("Sensitive media blur", systemImage: revealsSensitiveMedia ? "eye" : "eye.slash")
+                    }
+                    .accessibilityLabel("Sensitive media blur")
+                    .accessibilityValue(revealsSensitiveMedia ? "Off" : "On")
+                    .accessibilityHint(revealsSensitiveMedia ? "Blur sensitive images" : "Show sensitive images")
                 }
-                .accessibilityLabel("NSFW blur")
-                .accessibilityValue(blurNSFW ? "On" : "Off")
-                .accessibilityHint(blurNSFW ? "Show NSFW images" : "Blur NSFW images")
             }
         }
         .task { await store.refreshPosts(for: descriptor) }
         .refreshable { await store.refreshPosts(for: descriptor, forceRefresh: true) }
         .fullScreenCover(item: $selectedItem) { item in
-            OctonautMediaViewer(post: item.post, initialPage: item.page, onOpenPost: {
+            OctonautMediaViewer(post: item.post, initialPage: item.page, initiallyRevealed: revealsSensitiveMedia, onOpenPost: {
                 selectedItem = nil
                 router.push(.post(item.post))
             })

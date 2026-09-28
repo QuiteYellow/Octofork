@@ -192,8 +192,10 @@ private struct MacPostMediaCard: View {
 
     private var shouldBlurMedia: Bool {
         guard !revealsSensitiveMedia else { return false }
-        return (post.isNSFW && dependencies.settings.blurNSFWMedia)
-            || (post.isSpoiler && dependencies.settings.blurSpoilers)
+        return post.isSensitive(
+            blurringNSFW: dependencies.settings.blurNSFWMedia,
+            blurringSpoilers: dependencies.settings.blurSpoilers
+        )
     }
 
     var body: some View {
@@ -800,8 +802,10 @@ private struct MacMediaLightboxView: View {
 
     private var shouldBlurMedia: Bool {
         guard !isRevealed else { return false }
-        return (post.isNSFW && dependencies.settings.blurNSFWMedia)
-            || (post.isSpoiler && dependencies.settings.blurSpoilers)
+        return post.isSensitive(
+            blurringNSFW: dependencies.settings.blurNSFWMedia,
+            blurringSpoilers: dependencies.settings.blurSpoilers
+        )
     }
 
     private var mediaURLs: [URL] {
@@ -884,11 +888,6 @@ private struct MacMediaLightboxView: View {
             player?.pause()
             player = nil
         }
-        .alert("Saved", isPresented: messageBinding($saveMessage)) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(saveMessage ?? "The media was saved.")
-        }
         .alert("Could not save media", isPresented: messageBinding($saveError)) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -961,10 +960,22 @@ private struct MacMediaLightboxView: View {
                     chooseFolderAndSave()
                 }
             } label: {
-                Label(isSaving ? "Saving" : "Save media", systemImage: isSaving ? "arrow.down.circle.dotted" : "arrow.down.circle")
+                Label {
+                    Text(isSaving ? "Saving" : saveMessage != nil ? "Saved" : "Save media")
+                } icon: {
+                    ZStack {
+                        Image(systemName: saveMessage != nil ? "checkmark.circle" : "arrow.down.circle")
+                            .opacity(isSaving ? 0 : 1)
+                        if isSaving {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                }
             }
             .disabled(isSaving || mediaURLs.isEmpty || post.mediaKind == "embeddedVideo")
             .menuIndicator(.hidden)
+            .accessibilityValue(isSaving ? "Saving media" : saveMessage ?? "")
         }
         .padding(14)
         .background(LinearGradient(colors: [.black.opacity(0.78), .clear], startPoint: .top, endPoint: .bottom))
@@ -1062,6 +1073,8 @@ private struct MacMediaLightboxView: View {
     private func saveAll(to destination: MacMediaSaveDestination) {
         guard !isSaving, !mediaURLs.isEmpty else { return }
         isSaving = true
+        saveMessage = nil
+        saveError = nil
         Task {
             defer { isSaving = false }
             do {
@@ -1317,10 +1330,22 @@ private struct MacMediaDownloadContextMenu: ViewModifier {
                         chooseFolderAndSave()
                     }
                 }
-                .alert("Saved", isPresented: messageBinding($saveMessage)) {
-                    Button("OK", role: .cancel) {}
-                } message: {
-                    Text(saveMessage ?? "The media was saved.")
+                .overlay(alignment: .topTrailing) {
+                    if isSaving || saveMessage != nil {
+                        ZStack {
+                            Image(systemName: "checkmark.circle")
+                                .opacity(isSaving ? 0 : 1)
+                            if isSaving {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                        .padding(8)
+                        .background(.regularMaterial, in: Circle())
+                        .padding(8)
+                        .allowsHitTesting(false)
+                        .accessibilityLabel(isSaving ? "Saving media" : saveMessage ?? "Saved")
+                    }
                 }
                 .alert("Could not save media", isPresented: messageBinding($saveError)) {
                     Button("OK", role: .cancel) {}
@@ -1342,6 +1367,8 @@ private struct MacMediaDownloadContextMenu: ViewModifier {
     private func saveAll(to destination: MacMediaSaveDestination) {
         guard !isSaving, canDownload else { return }
         isSaving = true
+        saveMessage = nil
+        saveError = nil
         Task {
             defer { isSaving = false }
             do {
