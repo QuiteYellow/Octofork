@@ -16,7 +16,7 @@ struct MacSettingsView: View {
                     Text("Compact rows").tag(FeedLayout.compact)
                 }
                 Toggle("Show post flair", isOn: $settings.showPostFlair)
-                Toggle("Hide seen posts", isOn: $settings.hideSeenPosts)
+                Toggle("Hide read posts on refresh", isOn: $settings.hideSeenPosts)
                 Toggle("Show filter count", isOn: $settings.showFilterCount)
             }
             .formStyle(.grouped)

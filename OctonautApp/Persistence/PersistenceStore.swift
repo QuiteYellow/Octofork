@@ -4,6 +4,7 @@ import SwiftData
 actor InMemoryPersistenceStore: PersistenceStore {
     private var accounts: [AccountID: Account] = [:]
     private var seen: [String: Date] = [:]
+    private var cleared: Set<String> = []
     private var drafts: [UUID: Draft] = [:]
     private var statistics: [UsageStatistic: Int] = [:]
     private var communityVisits: [String: Int] = [:]
@@ -42,6 +43,19 @@ actor InMemoryPersistenceStore: PersistenceStore {
 
     func clearSeenPosts() async throws {
         seen.removeAll()
+        cleared.removeAll()
+    }
+
+    func loadClearedPostIDs() async throws -> [String] {
+        Array(cleared)
+    }
+
+    func setPostsCleared(_ ids: [String], cleared newValue: Bool) async throws {
+        if newValue {
+            cleared.formUnion(ids)
+        } else {
+            cleared.subtract(ids)
+        }
     }
 
     func loadFeedPreference(feedKey: String, accountScope: String) async throws -> FeedSortPreference? {
@@ -178,6 +192,33 @@ final class SwiftDataPersistenceStore: PersistenceStore, @unchecked Sendable {
 
     func clearSeenPosts() async throws {
         try context.fetch(FetchDescriptor<SeenPostRecord>()).forEach(context.delete)
+        try context.save()
+    }
+
+    func loadClearedPostIDs() async throws -> [String] {
+        try context.fetch(FetchDescriptor<SeenPostRecord>())
+            .filter { $0.clearedAt != nil }
+            .map(\.postID)
+    }
+
+    func setPostsCleared(_ ids: [String], cleared: Bool) async throws {
+        guard !ids.isEmpty else { return }
+        let wanted = Set(ids)
+        let records = try context.fetch(FetchDescriptor<SeenPostRecord>())
+        var found: Set<String> = []
+        for record in records where wanted.contains(record.postID) {
+            record.clearedAt = cleared ? .now : nil
+            found.insert(record.postID)
+        }
+        if cleared {
+            // A post can only be cleared after being read, so the record
+            // should exist -- but never lose the instruction if it does not.
+            for id in wanted.subtracting(found) {
+                let record = SeenPostRecord(postID: id)
+                record.clearedAt = .now
+                context.insert(record)
+            }
+        }
         try context.save()
     }
 

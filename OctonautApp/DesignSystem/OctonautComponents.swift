@@ -193,6 +193,10 @@ struct OctonautPostRow: View {
     @Environment(\.octonautTheme) private var theme
     @Environment(\.openURL) private var openURL
     let post: PostCardModel
+    /// Passed in, never stored on the post: the reader's seen set is the one
+    /// place that knows, and every surface derives this from it at the point
+    /// of drawing.
+    var isSeen = false
     var bodyLineLimit: Int? = 4
     var showsFlair = true
     var mediaPreloader: OctonautFeedMediaPreloader?
@@ -244,9 +248,10 @@ struct OctonautPostRow: View {
                 commentsControl
                 Spacer(minLength: 8)
                 OctonautIconLabel(
-                    systemImage: post.isSeen ? "eye.slash" : "eye", title: post.age,
-                    color: post.isSeen ? theme.seen : theme.secondaryText
+                    systemImage: isSeen ? "eye.slash" : "eye", title: post.age,
+                    color: isSeen ? theme.seen : theme.secondaryText
                 )
+                .contentTransition(.symbolEffect(.replace))
                 .padding(.horizontal, 6)
                 .octonautActionPill(theme: theme)
                 Spacer(minLength: 8)
@@ -266,7 +271,12 @@ struct OctonautPostRow: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 13)
-        .opacity(post.isSeen ? 0.62 : 1)
+        .opacity(isSeen ? 0.62 : 1)
+        // Scoped to the flag, so a row only crossfades when a post is
+        // actually marked while the reader is looking at it. A row created
+        // already-read renders dimmed with no animation, because
+        // `animation(_:value:)` reacts to a change, not to a first value.
+        .animation(.easeOut(duration: 0.45), value: isSeen)
         .overlay(alignment: .bottom) { Rectangle().fill(theme.divider).frame(height: 0.5) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(
@@ -291,7 +301,7 @@ struct OctonautPostRow: View {
             Button {
                 onSeen?()
             } label: {
-                Label(post.isSeen ? "Mark Unseen" : "Mark Seen", systemImage: "eye")
+                Label(isSeen ? "Mark Unseen" : "Mark Seen", systemImage: "eye")
             }
             if let onCrosspost {
                 Button(action: onCrosspost) {
@@ -574,6 +584,8 @@ enum OctonautMarkdown {
 struct OctonautCompactPostRow: View {
     @Environment(\.octonautTheme) private var theme
     let post: PostCardModel
+    /// Derived where the row is drawn. See `OctonautPostRow.isSeen`.
+    var isSeen = false
     var thumbnailOnRight = false
     var showsFlair = true
     var blursNSFW = true
@@ -617,7 +629,8 @@ struct OctonautCompactPostRow: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 9)
-        .opacity(post.isSeen ? 0.62 : 1)
+        .opacity(isSeen ? 0.62 : 1)
+        .animation(.easeOut(duration: 0.45), value: isSeen)
         .overlay(alignment: .bottom) { Rectangle().fill(theme.divider).frame(height: 0.5) }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(

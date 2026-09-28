@@ -18,6 +18,8 @@ protocol PersistenceStore: Sendable {
     func markPostSeen(_ id: String, seenAt: Date) async throws
     func removePostSeen(_ id: String) async throws
     func clearSeenPosts() async throws
+    func loadClearedPostIDs() async throws -> [String]
+    func setPostsCleared(_ ids: [String], cleared: Bool) async throws
     func loadDrafts(accountID: AccountID?) async throws -> [Draft]
     func saveDraft(_ draft: Draft) async throws
     func deleteDraft(_ id: UUID) async throws

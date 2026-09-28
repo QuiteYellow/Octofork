@@ -57,3 +57,49 @@ final class FeedScrollTracker {
         isScrolledFromTop = false
     }
 }
+
+/// Holds a marking decision briefly, so overscrolling can be taken back.
+///
+/// A post crossing the read line is not read the instant it does: flick a
+/// little too far and it should be possible to scroll back without having
+/// lost it. Each post gets its own short wait, and coming back into view
+/// before it elapses cancels the mark outright.
+///
+/// This is FUN-LIST-005's 750 milliseconds, applied as the grace on the
+/// decision rather than as a dwell that marks posts merely for being on
+/// screen -- which would mark the whole screenful for opening a feed.
+@MainActor
+final class FeedSeenMarkScheduler {
+    private var pending: [String: Task<Void, Never>] = [:]
+    private let delay: Duration
+
+    init(delay: Duration = .milliseconds(750)) {
+        self.delay = delay
+    }
+
+    /// The ids currently past the read line. Anything pending that is no
+    /// longer among them has been scrolled back to, and is dropped.
+    func schedule(_ ids: [String], mark: @escaping @MainActor (String) -> Void) {
+        let eligible = Set(ids)
+        for (id, task) in pending where !eligible.contains(id) {
+            task.cancel()
+            pending.removeValue(forKey: id)
+        }
+        let delay = delay
+        for id in ids where pending[id] == nil {
+            pending[id] = Task { [weak self] in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled else { return }
+                mark(id)
+                self?.pending.removeValue(forKey: id)
+            }
+        }
+    }
+
+    func cancelAll() {
+        pending.values.forEach { $0.cancel() }
+        pending.removeAll()
+    }
+
+    var pendingCount: Int { pending.count }
+}

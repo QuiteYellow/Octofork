@@ -159,6 +159,7 @@ struct SearchRootView: View {
                 ForEach(model.posts) { post in
                     OctonautPostRow(
                         post: post,
+                        isSeen: store.isSeen(post.id),
                         showsFlair: dependencies.settings.showPostFlair
                     )
                     .fixedSize(horizontal: false, vertical: true)

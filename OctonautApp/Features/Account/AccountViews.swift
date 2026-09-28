@@ -470,6 +470,9 @@ struct UserSectionView: View {
         case .posts:
             ForEach(posts) { post in
                 NavigationLink(value: FeatureRoute.post(post)) {
+                    // Not dimmed: a saved or upvoted post is there because
+                    // the reader put it there, not because they have yet to
+                    // get to it.
                     OctonautCompactPostRow(
                         post: post,
                         showsFlair: dependencies.settings.showPostFlair,

@@ -55,7 +55,6 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
     var age: String
     var vote: Int
     var isSaved: Bool
-    var isSeen: Bool
     var isNSFW: Bool
     var isSpoiler: Bool
     var isSticky: Bool
@@ -76,7 +75,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         id: "t3_screenshot-cat", community: "aww", author: "sunny_window",
         title: "Found the warmest spot in the house",
         body: "", score: 2_418, comments: 126, age: "2h", vote: 0,
-        isSaved: false, isSeen: false, isNSFW: false, isSpoiler: false,
+        isSaved: false, isNSFW: false, isSpoiler: false,
         isSticky: false, isVideo: false, hasMedia: true, mediaTitle: "Image",
         shareURL: URL(string: "https://www.reddit.com/r/aww/comments/screenshotcat")!,
         mediaURL: URL(string: "octonaut-screenshot://cat")!,
@@ -87,7 +86,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         id: "t3_screenshot-coast", community: "photography", author: "trailwalker",
         title: "A quiet walk above the coast",
         body: "", score: 1_306, comments: 84, age: "4h", vote: 0,
-        isSaved: true, isSeen: false, isNSFW: false, isSpoiler: false,
+        isSaved: true, isNSFW: false, isSpoiler: false,
         isSticky: false, isVideo: false, hasMedia: true, mediaTitle: "Image",
         shareURL: URL(string: "https://www.reddit.com/r/photography/comments/screenshotcoast")!,
         mediaURL: URL(string: "octonaut-screenshot://coast")!,
@@ -98,7 +97,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         id: "t3_screenshot-gallery", community: "photography", author: "trailwalker",
         title: "A sunny afternoon, two favourite views",
         body: "", score: 1_306, comments: 84, age: "4h", vote: 0,
-        isSaved: false, isSeen: false, isNSFW: false, isSpoiler: false,
+        isSaved: false, isNSFW: false, isSpoiler: false,
         isSticky: false, isVideo: false, hasMedia: true, mediaTitle: "Gallery",
         shareURL: URL(string: "https://www.reddit.com/r/photography/comments/screenshotgallery")!,
         mediaURL: URL(string: "octonaut-screenshot://coast")!,
@@ -140,7 +139,6 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         age: String,
         vote: Int,
         isSaved: Bool,
-        isSeen: Bool,
         isNSFW: Bool,
         isSpoiler: Bool,
         isSticky: Bool,
@@ -167,7 +165,6 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         self.age = age
         self.vote = vote
         self.isSaved = isSaved
-        self.isSeen = isSeen
         self.isNSFW = isNSFW
         self.isSpoiler = isSpoiler
         self.isSticky = isSticky
@@ -197,7 +194,6 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
             age: post.createdAt.formatted(.relative(presentation: .named)),
             vote: post.vote.direction,
             isSaved: post.isSaved,
-            isSeen: post.isHidden,
             isNSFW: post.isNSFW,
             isSpoiler: post.isSpoiler,
             isSticky: post.isSticky,
@@ -266,8 +262,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
             age: "",
             vote: 0,
             isSaved: false,
-            isSeen: false,
-            isNSFW: false,
+                        isNSFW: false,
             isSpoiler: false,
             isSticky: false,
             isVideo: false,
@@ -289,8 +284,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         age: "3h",
         vote: 1,
         isSaved: false,
-        isSeen: false,
-        isNSFW: false,
+                isNSFW: false,
         isSpoiler: false,
         isSticky: false,
         isVideo: false,
@@ -310,8 +304,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         age: "5h",
         vote: 0,
         isSaved: true,
-        isSeen: false,
-        isNSFW: false,
+                isNSFW: false,
         isSpoiler: false,
         isSticky: false,
         isVideo: false,
@@ -928,10 +921,24 @@ final class OctonautFeatureStore {
     @ObservationIgnored private var loadedFeed: FeedDescriptorModel?
     @ObservationIgnored private var feedCache: [FeedCacheKey: FeedCacheEntry] = [:]
     @ObservationIgnored private let feedCacheFreshness: TimeInterval = 15 * 60
-    /// The locally recorded seen set, read once and then kept current by
-    /// `setSeen`. `loadSeenPostIDs` walks the whole table, so asking for it
-    /// once per page was work the feed did not need.
-    @ObservationIgnored private var seenPostIDs: Set<String> = []
+    /// Every post the reader has finished with. The single source of truth:
+    /// nothing else stores a copy of it.
+    ///
+    /// Read once from the record and then kept current by `setSeen`
+    /// (`loadSeenPostIDs` walks the whole table, so asking per page was work
+    /// the feed did not need), and observed, so that marking a post read
+    /// re-renders whatever is showing it -- the feed, search results, a
+    /// profile, the post itself -- without any of them holding a flag that
+    /// can fall out of step.
+    ///
+    /// Both references settled here too: Hydra reads its `SeenPosts` table
+    /// while rendering each post, and Winston's `Post` is a reference type
+    /// shared by every view, so neither ever has a second copy to keep
+    /// correct. Ours was a `Bool` copied into `posts`, into every cached
+    /// feed, into `detailPost`, into `userProfilePosts` and into the search
+    /// model -- five truths, of which two were ever stamped.
+    private(set) var seenPostIDs: Set<String> = []
+    @ObservationIgnored private var hasLoadedSeenPostIDs = false
     /// The feed whose remembered sort has already been resolved, so arriving
     /// at a feed reads the record once rather than on every appearance -- and
     /// so a sort chosen while reading is not immediately overwritten by the
@@ -946,7 +953,6 @@ final class OctonautFeatureStore {
     /// the cache under the post-toggle revision, where a later refresh
     /// accepted it as a hit and served filtered-out posts straight back.
     @ObservationIgnored private var loadedFilterRevision = 0
-    @ObservationIgnored private var hasLoadedSeenPostIDs = false
     @ObservationIgnored private var detailCache: [DetailCacheKey: DetailCacheEntry] = [:]
     @ObservationIgnored private let detailCacheFreshness: TimeInterval = 10 * 60
     @ObservationIgnored private let detailCacheCapacity = 20
@@ -961,14 +967,14 @@ final class OctonautFeatureStore {
             title: "Swift 6 migration: what did you change first?",
             body:
                 "A practical discussion about strict concurrency, actors, and the changes that paid off.",
-            score: 642, comments: 96, age: "7h", vote: 0, isSaved: false, isSeen: true, isNSFW: false,
+            score: 642, comments: 96, age: "7h", vote: 0, isSaved: false, isNSFW: false,
             isSpoiler: false, isSticky: false, isVideo: false, hasMedia: false, mediaTitle: "",
             shareURL: URL(string: "https://www.reddit.com/r/swift/comments/sample3")!),
         PostCardModel(
             id: "t3_sample-4", community: "technology", author: "daylight_savings",
             title: "What are you reading this week?",
             body: "Share a useful paper, book, or long-form article.", score: 414, comments: 61,
-            age: "9h", vote: -1, isSaved: false, isSeen: false, isNSFW: false, isSpoiler: false,
+            age: "9h", vote: -1, isSaved: false, isNSFW: false, isSpoiler: false,
             isSticky: true, isVideo: false, hasMedia: false, mediaTitle: "",
             shareURL: URL(string: "https://www.reddit.com/r/technology/comments/sample4")!),
     ]
@@ -1016,12 +1022,90 @@ final class OctonautFeatureStore {
     /// accessory's running count, so it is deliberately a session value and
     /// is never persisted.
     private(set) var postsReadSinceReset = 0
+    /// Posts the reader has cleared out of the feed.
+    ///
+    /// Recorded, not session state: pressing the control is the reader saying
+    /// "take these away", and they should stay away -- across a refresh, and
+    /// across quitting the app. Independent of the hide-on-refresh setting,
+    /// which is about read posts in general rather than the ones explicitly
+    /// dismissed.
+    private(set) var postsClearedFromFeed: Set<String> = []
+
+    /// Posts marked seen since the reader last acted on the tally.
+    ///
+    /// Hiding is applied when the feed is rendered, so without this a post
+    /// would vanish the instant scrolling marked it -- rows disappearing from
+    /// under the reader's thumb, taking the scroll position with them. These
+    /// stay on screen until the reader clears them or refreshes, which is
+    /// what the accessory's "you have read twelve of these, tap to clear
+    /// them out" already promises.
+    private(set) var postsKeptVisibleWhileReading: Set<String> = []
     var userProfile: UserProfile?
     var userProfilePosts: [PostCardModel] = []
     var userProfileComments: [UserCommentCardModel] = []
     var userProfileState: OctonautLoadState = .idle
     var loadedUserProfileUsername = ""
     var loadedUserProfileAccountContext = ""
+    /// The tail of the seen-record write queue.
+    ///
+    /// Every write to the record goes through here, in order. They used to be
+    /// separate detached tasks, which meant a mark could land *after* a clear
+    /// that was issued later: the in-memory set was empty, so the screen
+    /// looked cleared, while the row went back into the table and came back
+    /// greyed out on the next launch.
+    @ObservationIgnored private var seenWriteQueue: Task<Void, Never>?
+
+    /// The last failure while writing the seen record, if there was one.
+    /// Every one of these used to be swallowed by `try?`, so a record that
+    /// was not being written looked exactly like one that was.
+    private(set) var seenRecordError: String?
+
+    @discardableResult
+    private func enqueueSeenWrite(
+        _ work: @escaping @Sendable (any PersistenceStore) async throws -> Void
+    ) -> Task<Void, Never>? {
+        guard let persistence else { return nil }
+        let previous = seenWriteQueue
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            do {
+                try await work(persistence)
+            } catch {
+                self?.seenRecordError = error.localizedDescription
+            }
+        }
+        seenWriteQueue = task
+        return task
+    }
+
+    /// Whether the reader has finished with this post. Ask here; do not keep
+    /// the answer.
+    func isSeen(_ postID: String) -> Bool {
+        seenPostIDs.contains(postID)
+    }
+
+    /// What the feed should show: everything fetched, minus what the reader
+    /// has finished with, when they have asked for that.
+    ///
+    /// Derived rather than filtered at load time. Filtering on the way in
+    /// made the contents of the feed depend on when a post was marked
+    /// relative to when its page was fetched, so acting on the toggle meant
+    /// refetching -- which can fail, can be served from a cache, and can
+    /// leave read posts on screen when it does either. Derived, the toggle
+    /// cannot fail: it is the same list, read through a different predicate.
+    var visiblePosts: [PostCardModel] {
+        posts.filter { post in
+            // Cleared by the control: gone, regardless of the setting.
+            if postsClearedFromFeed.contains(post.id) { return false }
+            // Otherwise read posts stay, greyed, unless the reader has asked
+            // for them to disappear on their own -- and even then, one marked
+            // while scrolling stays until they act, so a row never vanishes
+            // from under the thumb that is scrolling it.
+            guard settings?.hideSeenPosts == true else { return true }
+            return !seenPostIDs.contains(post.id) || postsKeptVisibleWhileReading.contains(post.id)
+        }
+    }
+
     var unreadCount: Int { inbox.filter(\.isUnread).count }
     var accountContextKey: String {
         "\(accountID?.description ?? "anonymous"):\(accountGeneration)"
@@ -1163,13 +1247,21 @@ final class OctonautFeatureStore {
 
     func refreshPosts(for descriptor: FeedDescriptorModel = .popular, forceRefresh: Bool = false) async {
         if screenshotMode { return }
-        // Before the cache key is computed, since the key carries the sort.
+        // Before any posts are assigned, including from the cache: the first
+        // frame must already know what has been read.
+        _ = await seenPostIDSet()
+        // And before the cache key is computed, since the key carries the sort.
         await resolveStoredSort(for: descriptor)
         let requestID = UUID()
         feedRequestID = requestID
         let filterRevision = Int(settings?.filterRevision ?? 0)
         let cacheKey = feedCacheKey(for: descriptor)
         var hasWarmContent = loadedFeed == descriptor && !posts.isEmpty
+        if forceRefresh {
+            // An explicit refresh is the reader acting, so posts they have
+            // already read stop being held on screen.
+            postsKeptVisibleWhileReading.removeAll()
+        }
         if !forceRefresh,
            let cached = feedCache[cacheKey],
            cached.filterRevision == filterRevision {
@@ -1711,7 +1803,7 @@ final class OctonautFeatureStore {
                     authorFlair: post.authorFlair, title: post.title, body: post.body,
                     flair: post.flair, score: post.score,
                     comments: post.comments,
-                    age: post.age, vote: post.vote, isSaved: post.isSaved, isSeen: post.isSeen,
+                    age: post.age, vote: post.vote, isSaved: post.isSaved,
                     isNSFW: post.isNSFW, isSpoiler: post.isSpoiler, isSticky: post.isSticky,
                     isVideo: post.isVideo, hasMedia: post.hasMedia, mediaTitle: post.mediaTitle,
                     shareURL: post.shareURL, mediaURL: post.mediaURL, thumbnailURL: post.thumbnailURL,
@@ -1758,20 +1850,18 @@ final class OctonautFeatureStore {
     private func seenPostIDSet() async -> Set<String> {
         if hasLoadedSeenPostIDs { return seenPostIDs }
         guard let persistence else { return [] }
-        seenPostIDs = Set((try? await persistence.loadSeenPostIDs()) ?? [])
+        // Merged, not assigned. Anything marked while this load was in flight
+        // is already in the set and its write may not have landed yet, so
+        // overwriting would quietly un-read those posts.
+        seenPostIDs.formUnion((try? await persistence.loadSeenPostIDs()) ?? [])
+        // Clearing is meant to last, so what was cleared is read back too.
+        postsClearedFromFeed.formUnion((try? await persistence.loadClearedPostIDs()) ?? [])
         hasLoadedSeenPostIDs = true
         return seenPostIDs
     }
 
-    /// Reddit's `hidden` flag is Reddit's, not ours, so a freshly decoded
-    /// card always arrives unseen. Stamping the local record onto it is what
-    /// keeps a post dimmed after a relaunch.
-    private func makeCards(from values: [Post], seenIDs: Set<String>) -> [PostCardModel] {
-        values.map { post in
-            var card = PostCardModel(post: post)
-            card.isSeen = card.isSeen || seenIDs.contains(post.id)
-            return card
-        }
+    private func makeCards(from values: [Post]) -> [PostCardModel] {
+        values.map(PostCardModel.init)
     }
 
     private struct FilteredPage {
@@ -1822,7 +1912,7 @@ final class OctonautFeatureStore {
             page.removedCount += filtered.removedCount
             page.after = nextCursor
             if !filtered.posts.isEmpty {
-                page.cards = makeCards(from: filtered.posts, seenIDs: filtered.seenIDs)
+                page.cards = makeCards(from: filtered.posts)
                 break
             }
             if nextCursor == nil { break }
@@ -1830,11 +1920,12 @@ final class OctonautFeatureStore {
         return page
     }
 
-    private func applyFilters(to values: [Post]) async -> (posts: [Post], removedCount: Int, seenIDs: Set<String>) {
-        let hideSeen = settings?.hideSeenPosts ?? false
-        // Loaded even when nothing is being hidden, because the cards still
-        // need the seen flag stamped on them for the dimmed styling.
-        let seenIDs = await seenPostIDSet()
+    private func applyFilters(to values: [Post]) async -> (posts: [Post], removedCount: Int) {
+        // Seen posts are not dropped here, and nothing is stamped onto the
+        // cards: what the reader has finished with is answered by `isSeen`
+        // wherever a post is drawn. Warming the set still matters, so that
+        // the first frame after a load already knows.
+        _ = await seenPostIDSet()
 
         let keywordTerms =
             UserDefaults.standard.string(forKey: "filters.keywordTerms")?.split(separator: ",").map {
@@ -1849,9 +1940,7 @@ final class OctonautFeatureStore {
             values,
             configuration: DeterministicFilterConfiguration(
                 blockedCommunities: blockedCommunities,
-                keywordRules: keywordTerms.isEmpty ? [] : [KeywordFilterRule(terms: keywordTerms)],
-                seenPostIDs: seenIDs,
-                hideSeen: hideSeen
+                keywordRules: keywordTerms.isEmpty ? [] : [KeywordFilterRule(terms: keywordTerms)]
             )
         )
 
@@ -1860,7 +1949,7 @@ final class OctonautFeatureStore {
             let instruction = UserDefaults.standard.string(forKey: "filters.semantic.instruction"),
             !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            return (deterministic.visible, deterministic.removedCount, seenIDs)
+            return (deterministic.visible, deterministic.removedCount)
         }
 
         let rule = SemanticRule(
@@ -1871,7 +1960,7 @@ final class OctonautFeatureStore {
         let decisions = await semanticFilter.classify(posts: deterministic.visible, rule: rule)
         let hiddenIDs = Set(decisions.filter(\.shouldHide).map(\.itemID))
         let visible = deterministic.visible.filter { !hiddenIDs.contains($0.id) }
-        return (visible, values.count - visible.count, seenIDs)
+        return (visible, values.count - visible.count)
     }
 
     /// Updates the account used by subsequent reads. Callers should refresh
@@ -2153,60 +2242,114 @@ final class OctonautFeatureStore {
     /// Sets the seen flag outright. Scrolling past a post and "Mark Visible
     /// Seen" both want a setter, not a flip: the bulk action used to run
     /// through `markSeen` and so un-marked every post already read.
-    func setSeen(_ isSeen: Bool, postIDs: [String]) {
-        var pending: [String] = []
-        var didMutateCards = false
-        for postID in postIDs {
-            if let index = posts.firstIndex(where: { $0.id == postID }), posts[index].isSeen != isSeen {
-                posts[index].isSeen = isSeen
-                didMutateCards = true
-            }
-            if detailPost?.id == postID, detailPost?.isSeen != isSeen {
-                detailPost?.isSeen = isSeen
-                didMutateCards = true
-            }
-            if seenPostIDs.contains(postID) != isSeen {
-                pending.append(postID)
-            }
-        }
-        guard didMutateCards || !pending.isEmpty else { return }
+    /// - Parameter keepingVisible: whether these posts should stay on screen
+    ///   until the reader clears the tally. True for reading: a row must not
+    ///   vanish from under the thumb that is scrolling it. False for a
+    ///   deliberate bulk action -- "Mark Visible Seen" is the reader saying
+    ///   they are done with these, so holding them on screen afterwards makes
+    ///   the menu item look like it did nothing.
+    func setSeen(_ isSeen: Bool, postIDs: [String], keepingVisible: Bool = true) {
+        let changed = postIDs.filter { seenPostIDs.contains($0) != isSeen }
+        guard !changed.isEmpty else { return }
         if isSeen {
-            seenPostIDs.formUnion(pending)
-            postsReadSinceReset += pending.count
+            seenPostIDs.formUnion(changed)
+            postsReadSinceReset += changed.count
+            // Only what actually changed. Adding the whole batch pinned posts
+            // the reader had already dealt with back onto the screen, which is
+            // how "Mark Visible Seen" could put read posts back in the feed.
+            if keepingVisible {
+                postsKeptVisibleWhileReading.formUnion(changed)
+            } else {
+                postsKeptVisibleWhileReading.subtract(changed)
+            }
         } else {
-            seenPostIDs.subtract(pending)
-            postsReadSinceReset = max(0, postsReadSinceReset - pending.count)
+            seenPostIDs.subtract(changed)
+            postsReadSinceReset = max(0, postsReadSinceReset - changed.count)
+            postsKeptVisibleWhileReading.subtract(changed)
+            // Marking something unread undoes having cleared it away.
+            postsClearedFromFeed.subtract(changed)
+            enqueueSeenWrite { try await $0.setPostsCleared(changed, cleared: false) }
         }
         updateLoadedFeedCache()
-        guard !pending.isEmpty, let persistence else { return }
-        Task {
-            for postID in pending {
+        enqueueSeenWrite { store in
+            for postID in changed {
                 if isSeen {
-                    try? await persistence.markPostSeen(postID, seenAt: .now)
+                    try await store.markPostSeen(postID, seenAt: .now)
                 } else {
-                    try? await persistence.removePostSeen(postID)
+                    try await store.removePostSeen(postID)
                 }
             }
         }
     }
 
-    func setSeen(_ isSeen: Bool, postID: String) {
-        setSeen(isSeen, postIDs: [postID])
+    func setSeen(_ isSeen: Bool, postID: String, keepingVisible: Bool = true) {
+        setSeen(isSeen, postIDs: [postID], keepingVisible: keepingVisible)
     }
 
-    func resetPostsReadTally() {
+    /// How many posts the record holds. Shown in Settings, where the number
+    /// is the answer to "why did that old post come back?" -- the record is
+    /// capped at 5,000 and drops the oldest first.
+    var seenPostCount: Int { seenPostIDs.count }
+
+    /// Forgets every post the reader has finished with.
+    ///
+    /// The set is the only truth, so emptying it un-dims and un-hides
+    /// everything on screen in the same frame -- there are no copies left to
+    /// go looking for.
+    func clearSeenPosts() async {
+        seenPostIDs.removeAll()
+        postsClearedFromFeed.removeAll()
+        postsKeptVisibleWhileReading.removeAll()
         postsReadSinceReset = 0
+        hasLoadedSeenPostIDs = true
+        seenRecordError = nil
+        updateLoadedFeedCache()
+        // Awaited, and behind everything already queued: marks made moments
+        // earlier must be applied and then deleted, not applied afterwards.
+        // When this returns, the record really is empty.
+        await enqueueSeenWrite { try await $0.clearSeenPosts() }?.value
     }
+
+    /// Takes every read post out of the feed and starts the count again.
+    ///
+    /// This is what the feed control does, and it is an action rather than a
+    /// switch: press it and the greyed posts go, press it again and the ones
+    /// read since go too. It does not turn anything on or off, so pressing
+    /// twice never puts back what the first press removed.
+    func clearReadPostsFromFeed() {
+        let cleared = posts.map(\.id).filter { seenPostIDs.contains($0) }
+        postsKeptVisibleWhileReading.removeAll()
+        postsReadSinceReset = 0
+        guard !cleared.isEmpty else { return }
+        postsClearedFromFeed.formUnion(cleared)
+        enqueueSeenWrite { try await $0.setPostsCleared(cleared, cleared: true) }
+    }
+
+    /// Whether there is anything for the control to clear.
+    var hasReadPostsInFeed: Bool {
+        visiblePosts.contains { seenPostIDs.contains($0.id) }
+    }
+
+    /// Keeps paging while every fetched post is hidden.
+    ///
+    /// Hiding when the feed renders means a whole page can be hidden, and
+    /// then no row exists to ask for the next one -- the trap the load-time
+    /// filter had, relocated. FUN-LIST-004's two extra pages bound it, and a
+    /// listing that has ended stops it outright.
+    func loadMorePostsUntilSomethingIsVisible(for descriptor: FeedDescriptorModel) async {
+        var attempts = 0
+        while visiblePosts.isEmpty, !posts.isEmpty, nextPage != nil, attempts < 2 {
+            attempts += 1
+            let cursorBefore = nextPage
+            await loadMorePosts(for: descriptor)
+            if nextPage == cursorBefore { return }
+        }
+    }
+
 
     /// Flips the flag, for the explicit "Mark Seen"/"Mark Unseen" actions.
-    /// The detail screen can be showing a post the feed never loaded, so the
-    /// current value comes from whichever copy exists.
     func markSeen(postID: String) {
-        let current =
-            posts.first(where: { $0.id == postID })?.isSeen
-            ?? detailPost.flatMap { $0.id == postID ? $0.isSeen : nil }
-            ?? seenPostIDs.contains(postID)
-        setSeen(!current, postID: postID)
+        setSeen(!seenPostIDs.contains(postID), postID: postID)
     }
 
     func recordPostViewed() async {

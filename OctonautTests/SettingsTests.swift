@@ -267,12 +267,40 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(SettingsStore(defaults: defaults).showBottomNavigationOnLargeScreens)
     }
 
+    /// On by default, and remembered: it is only whether the control is on
+    /// screen, so it must not disturb the filter revision or anything else.
+    func testShowReadPostsBarDefaultsOnAndRoundTrips() {
+        let suite = "OctonautTests.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        let settings = SettingsStore(defaults: defaults)
+        XCTAssertTrue(settings.showsReadPostsBar)
+
+        let before = settings.filterRevision
+        settings.showsReadPostsBar = false
+        XCTAssertEqual(settings.filterRevision, before)
+
+        let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertFalse(reloaded.showsReadPostsBar)
+    }
+
     func testChangingAFetchTimeFilterIncrementsFilterRevision() {
         let defaults = UserDefaults(suiteName: "OctonautTests.\(UUID())")!
         let settings = SettingsStore(defaults: defaults)
         let before = settings.filterRevision
         settings.noteFilterChanged()
         XCTAssertEqual(settings.filterRevision, before &+ 1)
+    }
+
+    /// Hide-seen is applied when the feed renders, so it must not invalidate
+    /// cached feeds. Bumping the revision on every press is what forced the
+    /// toggle to refetch, and a refetch that failed or was served warm left
+    /// read posts on screen.
+    func testTogglingHideSeenDoesNotIncrementFilterRevision() {
+        let defaults = UserDefaults(suiteName: "OctonautTests.\(UUID())")!
+        let settings = SettingsStore(defaults: defaults)
+        let before = settings.filterRevision
+        settings.hideSeenPosts.toggle()
+        XCTAssertEqual(settings.filterRevision, before)
     }
 
     func testThemeRoundTripsThroughDefaults() {
@@ -297,7 +325,7 @@ final class SettingsTests: XCTestCase {
     private func post(isNSFW: Bool, isSpoiler: Bool) -> PostCardModel {
         PostCardModel(
             id: "t3_blur", community: "pics", author: "someone", title: "Title", body: "",
-            score: 1, comments: 0, age: "1h", vote: 0, isSaved: false, isSeen: false,
+            score: 1, comments: 0, age: "1h", vote: 0, isSaved: false,
             isNSFW: isNSFW, isSpoiler: isSpoiler, isSticky: false, isVideo: false,
             hasMedia: true, mediaTitle: "",
             shareURL: URL(string: "https://www.reddit.com/r/pics/comments/blur")!

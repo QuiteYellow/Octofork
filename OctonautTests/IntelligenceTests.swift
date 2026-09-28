@@ -17,17 +17,16 @@ final class IntelligenceTests: XCTestCase {
         XCTAssertEqual(result.reasons["Keyword"], 1)
     }
 
-    func testSeenFilterUsesStablePostIDs() {
+    /// Seen posts are hidden when the feed renders, never on the way in. See
+    /// `testTogglingHideSeenChangesTheFeedWithoutRefetching`.
+    func testTheDeterministicFilterDoesNotRemoveSeenPosts() {
         let result = DeterministicPostFilter.apply(
             FixtureData.posts,
-            configuration: DeterministicFilterConfiguration(
-                seenPostIDs: [FixtureData.posts[0].id],
-                hideSeen: true
-            )
+            configuration: DeterministicFilterConfiguration()
         )
 
-        XCTAssertFalse(result.visible.contains { $0.id == FixtureData.posts[0].id })
-        XCTAssertEqual(result.reasons["Seen"], 1)
+        XCTAssertEqual(result.visible.count, FixtureData.posts.count)
+        XCTAssertNil(result.reasons["Seen"])
     }
 
     func testKeyExcerptsAreDeterministicAndOrdered() {
