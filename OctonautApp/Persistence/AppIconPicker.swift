@@ -34,10 +34,10 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
 
     var previewName: String? {
         switch self {
-        case .liquidGlass: "Octonaut-Pearl-Blue"
+        case .liquidGlass: "PearlBluePreview"
         case .pearlPlush: "PearlPlushPreview"
         case .frostedPink: "FrostedPinkPreview"
-        case .original: "OriginalIconPreview"
+        case .original: nil
         }
     }
 

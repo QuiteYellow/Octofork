@@ -382,8 +382,16 @@ final class OctonautPlaybackCoordinator {
     private(set) var isFullScreenActive = false
 
     @ObservationIgnored private var positions: [URL: Double] = [:]
+    @ObservationIgnored private let activateAudio: @MainActor () -> Void
+    @ObservationIgnored private let deactivateAudio: @MainActor () -> Void
 
-    private init() {}
+    init(
+        activateAudio: @escaping @MainActor () -> Void = OctonautAudioSession.activatePlayback,
+        deactivateAudio: @escaping @MainActor () -> Void = OctonautAudioSession.deactivate
+    ) {
+        self.activateAudio = activateAudio
+        self.deactivateAudio = deactivateAudio
+    }
 
     func position(for url: URL) -> Double? {
         positions[url]
@@ -404,17 +412,16 @@ final class OctonautPlaybackCoordinator {
     func isAudioOwner(_ url: URL) -> Bool { audioOwner == url }
 
     func claimAudio(for url: URL) {
+        guard audioOwner != url else { return }
+        if audioOwner == nil { activateAudio() }
         audioOwner = url
-        OctonautAudioSession.activatePlayback()
     }
 
     func releaseAudio(for url: URL) {
         guard audioOwner == url else { return }
         audioOwner = nil
-        // The viewer runs its own session; do not pull it out from under it.
-        if !isFullScreenActive {
-            OctonautAudioSession.deactivate()
-        }
+        // The viewer has its own activation while it is audible.
+        deactivateAudio()
     }
 }
 
@@ -1306,6 +1313,7 @@ struct OctonautMediaViewer: View {
     init(
         post: PostCardModel,
         initialPage: Int = 0,
+        initiallyRevealed: Bool = false,
         onSave: (() -> Void)? = nil,
         onOpenPost: (() -> Void)? = nil
     ) {
@@ -1313,6 +1321,7 @@ struct OctonautMediaViewer: View {
         self.onSave = onSave
         self.onOpenPost = onOpenPost
         _page = State(initialValue: max(initialPage, 0))
+        _isRevealed = State(initialValue: initiallyRevealed)
     }
 
     private var mediaURLs: [URL] {
@@ -1357,6 +1366,7 @@ struct OctonautMediaViewer: View {
                                             ZStack {
                                                 OctonautEmbeddedVideoView(url: embedURL)
                                                     .aspectRatio(16 / 9, contentMode: .fit)
+                                                    .blur(radius: shouldBlurMedia ? 24 : 0)
                                                 if shouldBlurMedia {
                                                     Button { isRevealed = true } label: {
                                                         VStack(spacing: 7) {
@@ -1378,6 +1388,7 @@ struct OctonautMediaViewer: View {
                                                     accessibilityLabel: "Image \(index + 1) of \(mediaURLs.count)",
                                                     onZoomChange: { isZoomed = $0 }
                                                 )
+                                                .blur(radius: shouldBlurMedia ? 24 : 0)
                                                 if shouldBlurMedia {
                                                     Button { isRevealed = true } label: {
                                                         VStack(spacing: 7) {
@@ -1760,6 +1771,7 @@ struct OctonautVideoDetailView: View {
     @State private var looper = OctonautVideoLooper()
     @State private var positionObserver: Any?
     @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
+    @State private var audioSessionActivated = false
 
     private var coordinator: OctonautPlaybackCoordinator { .shared }
 
@@ -1793,7 +1805,8 @@ struct OctonautVideoDetailView: View {
             // and centre and the user asked for the route, so allow it.
             playback.player.allowsExternalPlayback = true
 
-            if !startsMuted {
+            if !startsMuted && !audioSessionActivated {
+                audioSessionActivated = true
                 OctonautAudioSession.activatePlayback()
             }
             if loops {
@@ -1834,7 +1847,8 @@ struct OctonautVideoDetailView: View {
             looper.detach()
             onPlayerChange?(nil)
             coordinator.endFullScreen()
-            if !startsMuted {
+            if audioSessionActivated {
+                audioSessionActivated = false
                 OctonautAudioSession.deactivate()
             }
         }

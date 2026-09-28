@@ -1373,29 +1373,48 @@ final class DomainTests: XCTestCase {
 
     @MainActor
     func testOnlyOneFeedRowOwnsAudioAtATime() throws {
-        let coordinator = OctonautPlaybackCoordinator.shared
+        var activations = 0
+        var deactivations = 0
+        let coordinator = OctonautPlaybackCoordinator(
+            activateAudio: { activations += 1 },
+            deactivateAudio: { deactivations += 1 }
+        )
         let first = try XCTUnwrap(URL(string: "https://v.redd.it/first/DASH_720.mp4"))
         let second = try XCTUnwrap(URL(string: "https://v.redd.it/second/DASH_720.mp4"))
 
-        coordinator.releaseAudio(for: first)
-        coordinator.releaseAudio(for: second)
         XCTAssertFalse(coordinator.isAudioOwner(first))
 
         coordinator.claimAudio(for: first)
         XCTAssertTrue(coordinator.isAudioOwner(first))
         XCTAssertFalse(coordinator.isAudioOwner(second))
+        XCTAssertEqual(activations, 1)
 
-        // Claiming elsewhere silences the previous owner rather than stacking.
+        coordinator.claimAudio(for: first)
+        XCTAssertEqual(activations, 1)
+
+        // Moving ownership keeps the same audio-session activation.
         coordinator.claimAudio(for: second)
         XCTAssertFalse(coordinator.isAudioOwner(first))
         XCTAssertTrue(coordinator.isAudioOwner(second))
+        XCTAssertEqual(activations, 1)
+        XCTAssertEqual(deactivations, 0)
 
         // A row that no longer owns audio must not be able to release it.
         coordinator.releaseAudio(for: first)
         XCTAssertTrue(coordinator.isAudioOwner(second))
+        XCTAssertEqual(deactivations, 0)
 
+        // The feed must release its activation even when a viewer is open.
+        coordinator.beginFullScreen()
         coordinator.releaseAudio(for: second)
         XCTAssertFalse(coordinator.isAudioOwner(second))
+        XCTAssertEqual(deactivations, 1)
+        coordinator.endFullScreen()
+
+        coordinator.claimAudio(for: first)
+        coordinator.releaseAudio(for: first)
+        XCTAssertEqual(activations, 2)
+        XCTAssertEqual(deactivations, 2)
     }
 }
 
