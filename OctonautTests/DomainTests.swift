@@ -910,7 +910,7 @@ final class DomainTests: XCTestCase {
             permalink: URL(string: "https://www.reddit.com/r/swift/comments/abc")!,
             community: CommunityReference(name: "swift"),
             title: "Media",
-            media: .video(url: imageURL, audioURL: audioURL, thumbnailURL: secondURL, isGIF: false)
+            media: .video(url: imageURL, audioURL: audioURL, thumbnailURL: secondURL, isGIF: false, width: 1280, height: 720)
         )
 
         let mapped = PostCardModel(post: post)
@@ -918,6 +918,7 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(mapped.thumbnailURL, secondURL)
         XCTAssertEqual(mapped.audioURL, audioURL)
         XCTAssertEqual(mapped.mediaKind, "video")
+        XCTAssertEqual(try XCTUnwrap(mapped.mediaAspectRatio), 1280.0 / 720.0, accuracy: 0.0001)
     }
 
     func testPostCardDoesNotRepeatImageURLAsBodyText() throws {
@@ -992,9 +993,9 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(card.thumbnailURL?.absoluteString, "https://preview.redd.it/second-thumb.jpg")
     }
 
-    func testRedditHostedVideoBecomesNativeVideoWithAudioAndPreview() async throws {
+    func testRedditHostedVideoPrefersTheHLSPlaylistOverTheDASHFallback() async throws {
         let data = Data(
-            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"video1","name":"t3_video1","permalink":"/r/videos/comments/video1/example/","title":"Example video","subreddit":"videos","url":"https://v.redd.it/clip123","is_self":false,"is_video":true,"post_hint":"hosted:video","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip123/DASH_720.mp4?source=fallback","hls_url":"https://v.redd.it/clip123/HLSPlaylist.m3u8","has_audio":true,"is_gif":false}},"preview":{"images":[{"source":{"url":"https://preview.redd.it/clip123.jpg?width=1080&amp;format=pjpg"}}]}}}]}}"#
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"video1","name":"t3_video1","permalink":"/r/videos/comments/video1/example/","title":"Example video","subreddit":"videos","url":"https://v.redd.it/clip123","is_self":false,"is_video":true,"post_hint":"hosted:video","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip123/DASH_720.mp4?source=fallback","hls_url":"https://v.redd.it/clip123/HLSPlaylist.m3u8","has_audio":true,"is_gif":false,"width":1920,"height":1080}},"preview":{"images":[{"source":{"url":"https://preview.redd.it/clip123.jpg?width=1080&amp;format=pjpg"}}]}}}]}}"#
                 .utf8)
         let client = FixtureRedditClient(listingData: data)
 
@@ -1004,13 +1005,36 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .video(let videoURL, let audioURL, let thumbnailURL, let isGIF) = post.media else {
+        guard case .video(let videoURL, let audioURL, let thumbnailURL, let isGIF, let width, let height) = post.media else {
             return XCTFail("Expected native video media")
         }
-        XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip123/DASH_720.mp4?source=fallback")
-        XCTAssertEqual(audioURL?.absoluteString, "https://v.redd.it/clip123/DASH_AUDIO_128.mp4?source=fallback")
+        // The playlist carries audio in-stream, so nothing has to be guessed,
+        // fetched or composed before the video can play.
+        XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip123/HLSPlaylist.m3u8")
+        XCTAssertNil(audioURL)
         XCTAssertEqual(thumbnailURL?.absoluteString, "https://preview.redd.it/clip123.jpg?width=1080&format=pjpg")
         XCTAssertFalse(isGIF)
+        XCTAssertEqual(width, 1920)
+        XCTAssertEqual(height, 1080)
+    }
+
+    func testRedditHostedVideoWithoutAPlaylistStillComposesTheDASHAudio() async throws {
+        let data = Data(
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"video2","name":"t3_video2","permalink":"/r/videos/comments/video2/example/","title":"Example video","subreddit":"videos","url":"https://v.redd.it/clip789","is_self":false,"is_video":true,"post_hint":"hosted:video","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/clip789/DASH_720.mp4?source=fallback","has_audio":true,"is_gif":false}}}}]}}"#
+                .utf8)
+        let client = FixtureRedditClient(listingData: data)
+
+        let listing = try await client.listing(
+            ListingRequest(feed: FeedDescriptor(destination: .home)),
+            account: nil
+        )
+        let post = try XCTUnwrap(listing.items.first)
+
+        guard case .video(let videoURL, let audioURL, _, _, _, _) = post.media else {
+            return XCTFail("Expected native video media")
+        }
+        XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip789/DASH_720.mp4?source=fallback")
+        XCTAssertEqual(audioURL?.absoluteString, "https://v.redd.it/clip789/DASH_AUDIO_128.mp4?source=fallback")
     }
 
     func testBareRedditVideoLinkUsesPlayableHLSURL() async throws {
@@ -1025,7 +1049,7 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .video(let videoURL, _, _, _) = post.media else {
+        guard case .video(let videoURL, _, _, _, _, _) = post.media else {
             return XCTFail("Expected a bare v.redd.it link to be treated as video")
         }
         XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/clip456/HLSPlaylist.m3u8")
@@ -1043,7 +1067,7 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .video(let videoURL, _, let thumbnailURL, _) = post.media else {
+        guard case .video(let videoURL, _, let thumbnailURL, _, _, _) = post.media else {
             return XCTFail("Expected crosspost parent video media")
         }
         XCTAssertEqual(videoURL.absoluteString, "https://v.redd.it/parentclip/DASH_480.mp4")

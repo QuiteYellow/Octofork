@@ -5,7 +5,7 @@ extension PostMedia {
     fileprivate var thumbnailURL: URL? {
         switch self {
         case .image(_, let thumbnail, _, _): return thumbnail
-        case .video(_, _, let thumbnail, _): return thumbnail
+        case .video(_, _, let thumbnail, _, _, _): return thumbnail
         case .gallery(let items): return items.first?.thumbnailURL
         case .link(_, let metadata): return metadata?.imageURL
         case .none, .poll, .unsupported: return nil
@@ -19,8 +19,21 @@ extension PostMedia {
     }
 
     fileprivate var audioURL: URL? {
-        if case .video(_, let audio, _, _) = self { return audio }
+        if case .video(_, let audio, _, _, _, _) = self { return audio }
         return nil
+    }
+
+    /// The aspect ratio Reddit publishes alongside the video.
+    ///
+    /// Worth carrying because it removes the only reason a row has to read
+    /// the asset before it can lay out, and because an HLS playlist has no
+    /// asset tracks to read: `loadTracks(withMediaType: .video)` returns
+    /// nothing on one, so measuring it would letterbox every portrait video
+    /// into 16:9.
+    fileprivate var aspectRatio: CGFloat? {
+        guard case .video(_, _, _, _, let width, let height) = self,
+              let width, let height, width > 0, height > 0 else { return nil }
+        return CGFloat(width) / CGFloat(height)
     }
 }
 
@@ -55,6 +68,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
     var mediaKind: String
     var galleryURLs: [URL]
     var audioURL: URL?
+    /// Reddit's own dimensions for the video, when it publishes them.
+    var mediaAspectRatio: CGFloat?
 
 #if DEBUG
     static let screenshotCat = PostCardModel(
@@ -137,7 +152,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         thumbnailURL: URL? = nil,
         mediaKind: String = "none",
         galleryURLs: [URL] = [],
-        audioURL: URL? = nil
+        audioURL: URL? = nil,
+        mediaAspectRatio: CGFloat? = nil
     ) {
         self.id = id
         self.community = community
@@ -164,6 +180,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         self.mediaKind = mediaKind
         self.galleryURLs = galleryURLs
         self.audioURL = audioURL
+        self.mediaAspectRatio = mediaAspectRatio
     }
 
     init(post: Post) {
@@ -192,7 +209,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
             thumbnailURL: post.media.thumbnailURL,
             mediaKind: post.media.kind,
             galleryURLs: post.media.galleryURLs,
-            audioURL: post.media.audioURL
+            audioURL: post.media.audioURL,
+            mediaAspectRatio: post.media.aspectRatio
         )
     }
 
