@@ -267,11 +267,11 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(SettingsStore(defaults: defaults).showBottomNavigationOnLargeScreens)
     }
 
-    func testChangingFilterIncrementsFilterRevision() {
+    func testChangingAFetchTimeFilterIncrementsFilterRevision() {
         let defaults = UserDefaults(suiteName: "OctonautTests.\(UUID())")!
         let settings = SettingsStore(defaults: defaults)
         let before = settings.filterRevision
-        settings.hideSeenPosts.toggle()
+        settings.noteFilterChanged()
         XCTAssertEqual(settings.filterRevision, before &+ 1)
     }
 
