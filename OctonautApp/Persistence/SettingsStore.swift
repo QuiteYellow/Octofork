@@ -212,6 +212,11 @@ final class SettingsStore {
     /// been read and clears it out. Purely whether the control is on screen:
     /// posts are still marked, dimmed and hidden exactly as the other two
     /// settings say, and the same action stays in the feed's display menu.
+    ///
+    /// Off by default. It is a persistent strip of chrome above the tab bar,
+    /// which is not something to hand someone who has not asked for it --
+    /// and the reader who wants it is the one who has already turned marking
+    /// on.
     var showsReadPostsBar: Bool { didSet { persist(showsReadPostsBar, key: Keys.showsReadPostsBar) } }
     var showFilterCount: Bool { didSet { persist(showFilterCount, key: Keys.showFilterCount) } }
 
@@ -401,7 +406,7 @@ final class SettingsStore {
         autoplayVideo = AutoplayVideo(rawValue: defaults.string(forKey: Keys.autoplayVideo) ?? "wifi") ?? .wifi
         enableLiveText = defaults.object(forKey: Keys.enableLiveText) as? Bool ?? true
         hideSeenPosts = defaults.object(forKey: Keys.hideSeenPosts) as? Bool ?? false
-        showsReadPostsBar = defaults.object(forKey: Keys.showsReadPostsBar) as? Bool ?? true
+        showsReadPostsBar = defaults.object(forKey: Keys.showsReadPostsBar) as? Bool ?? false
         autoMarkSeenWhileScrolling = defaults.object(forKey: Keys.autoMarkSeenWhileScrolling) as? Bool ?? false
         showFilterCount = defaults.object(forKey: Keys.showFilterCount) as? Bool ?? true
         wifiDataMode = DataMode(rawValue: defaults.string(forKey: Keys.wifiDataMode) ?? "normal") ?? .normal

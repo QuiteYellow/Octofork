@@ -267,20 +267,20 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(SettingsStore(defaults: defaults).showBottomNavigationOnLargeScreens)
     }
 
-    /// On by default, and remembered: it is only whether the control is on
+    /// Off by default, and remembered: it is only whether the control is on
     /// screen, so it must not disturb the filter revision or anything else.
-    func testShowReadPostsBarDefaultsOnAndRoundTrips() {
+    func testShowReadPostsBarDefaultsOffAndRoundTrips() {
         let suite = "OctonautTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         let settings = SettingsStore(defaults: defaults)
-        XCTAssertTrue(settings.showsReadPostsBar)
+        XCTAssertFalse(settings.showsReadPostsBar)
 
         let before = settings.filterRevision
-        settings.showsReadPostsBar = false
+        settings.showsReadPostsBar = true
         XCTAssertEqual(settings.filterRevision, before)
 
         let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
-        XCTAssertFalse(reloaded.showsReadPostsBar)
+        XCTAssertTrue(reloaded.showsReadPostsBar)
     }
 
     func testChangingAFetchTimeFilterIncrementsFilterRevision() {
