@@ -1244,4 +1244,176 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(card.community, "swift")
         XCTAssertEqual(card.score, 42)
     }
+
+    func testAnimatedGIFPostResolvesToTheMP4VariantAsLoopingVideo() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gif1","name":"t3_gif1","permalink":"/r/aww/comments/gif1/a-cat/","title":"A cat","subreddit":"aww","url":"https://i.redd.it/abc123.gif","post_hint":"image","preview":{"images":[{"source":{"url":"https://preview.redd.it/abc123.gif?width=640","width":640,"height":480},"variants":{"mp4":{"source":{"url":"https://preview.redd.it/abc123.gif?format=mp4&amp;s=sig","width":640,"height":480}}}}]}}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "gif")
+        XCTAssertTrue(card.isVideo)
+        XCTAssertEqual(
+            card.mediaURL?.absoluteString,
+            "https://preview.redd.it/abc123.gif?format=mp4&s=sig"
+        )
+        XCTAssertNil(card.audioURL)
+    }
+
+    func testImgurGIFWithoutAPreviewVariantFallsBackToTheMP4Path() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gif2","name":"t3_gif2","permalink":"/r/funny/comments/gif2/a-clip/","title":"A clip","subreddit":"funny","url":"https://i.imgur.com/xyz789.gif"}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "gif")
+        XCTAssertEqual(card.mediaURL?.absoluteString, "https://i.imgur.com/xyz789.mp4")
+    }
+
+    func testStaticImagePostIsStillDecodedAsAnImage() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"img1","name":"t3_img1","permalink":"/r/pics/comments/img1/a-photo/","title":"A photo","subreddit":"pics","url":"https://i.redd.it/static123.jpg","post_hint":"image","preview":{"images":[{"source":{"url":"https://preview.redd.it/static123.jpg","width":1920,"height":1080},"variants":{}}]}}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "image")
+        XCTAssertFalse(card.isVideo)
+    }
+
+    func testRedditHostedGIFVideoStillKeepsItsSilentTrack() throws {
+        let data = Data(
+            ##"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gif3","name":"t3_gif3","permalink":"/r/aww/comments/gif3/a-pup/","title":"A pup","subreddit":"aww","url":"https://v.redd.it/pup123","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/pup123/DASH_720.mp4","is_gif":true,"has_audio":false}}}}]}}"##.utf8
+        )
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaKind, "gif")
+        XCTAssertEqual(card.mediaURL?.absoluteString, "https://v.redd.it/pup123/DASH_720.mp4")
+        XCTAssertNil(card.audioURL)
+    }
+
+    @MainActor
+    func testVideoLooperRestartsPlaybackWhenTheItemEnds() async throws {
+        let url = try XCTUnwrap(URL(string: "https://preview.redd.it/example.gif?format=mp4"))
+        let item = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: item)
+        let looper = OctonautVideoLooper()
+
+        looper.attach(to: player)
+
+        // Without this the player stalls on the last frame instead of looping.
+        XCTAssertEqual(player.actionAtItemEnd, .none)
+
+        NotificationCenter.default.post(
+            name: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item
+        )
+        await Task.yield()
+
+        XCTAssertEqual(player.rate, 1, accuracy: 0.01)
+
+        looper.detach()
+        player.pause()
+
+        // After detaching, an end notification must no longer restart playback.
+        NotificationCenter.default.post(
+            name: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item
+        )
+        await Task.yield()
+
+        XCTAssertEqual(player.rate, 0, accuracy: 0.01)
+    }
+
+    @MainActor
+    func testPlaybackCoordinatorHandsThePlayheadBetweenFeedAndViewer() throws {
+        let coordinator = OctonautPlaybackCoordinator.shared
+        let url = try XCTUnwrap(URL(string: "https://v.redd.it/handoff/DASH_720.mp4"))
+
+        coordinator.endFullScreen()
+        XCTAssertFalse(coordinator.isFullScreenActive)
+
+        // The feed row records as it plays, so the viewer can pick it up.
+        coordinator.record(12.5, for: url)
+        XCTAssertEqual(try XCTUnwrap(coordinator.position(for: url)), 12.5, accuracy: 0.001)
+
+        coordinator.beginFullScreen()
+        XCTAssertTrue(coordinator.isFullScreenActive)
+
+        // The viewer advances it, and the row resumes from there on dismissal.
+        coordinator.record(30, for: url)
+        coordinator.endFullScreen()
+        XCTAssertFalse(coordinator.isFullScreenActive)
+        XCTAssertEqual(try XCTUnwrap(coordinator.position(for: url)), 30, accuracy: 0.001)
+
+        // Garbage from a not-yet-ready player must not clobber a good position.
+        coordinator.record(.nan, for: url)
+        coordinator.record(-4, for: url)
+        XCTAssertEqual(try XCTUnwrap(coordinator.position(for: url)), 30, accuracy: 0.001)
+
+        let unseen = try XCTUnwrap(URL(string: "https://v.redd.it/unseen/DASH_720.mp4"))
+        XCTAssertNil(coordinator.position(for: unseen))
+    }
+
+    func testMuxOutcomeReportsOnlyGenuineFailures() {
+        XCTAssertNil(OctonautMuxOutcome.notApplicable.failureReason)
+        XCTAssertNil(OctonautMuxOutcome.merged.failureReason)
+        XCTAssertEqual(
+            OctonautMuxOutcome.videoOnly(reason: "audio URL returned no audio track").failureReason,
+            "audio URL returned no audio track"
+        )
+    }
+
+    @MainActor
+    func testOnlyOneFeedRowOwnsAudioAtATime() throws {
+        var activations = 0
+        var deactivations = 0
+        let coordinator = OctonautPlaybackCoordinator(
+            activateAudio: { activations += 1 },
+            deactivateAudio: { deactivations += 1 }
+        )
+        let first = try XCTUnwrap(URL(string: "https://v.redd.it/first/DASH_720.mp4"))
+        let second = try XCTUnwrap(URL(string: "https://v.redd.it/second/DASH_720.mp4"))
+
+        XCTAssertFalse(coordinator.isAudioOwner(first))
+
+        coordinator.claimAudio(for: first)
+        XCTAssertTrue(coordinator.isAudioOwner(first))
+        XCTAssertFalse(coordinator.isAudioOwner(second))
+        XCTAssertEqual(activations, 1)
+
+        coordinator.claimAudio(for: first)
+        XCTAssertEqual(activations, 1)
+
+        // Moving ownership keeps the same audio-session activation.
+        coordinator.claimAudio(for: second)
+        XCTAssertFalse(coordinator.isAudioOwner(first))
+        XCTAssertTrue(coordinator.isAudioOwner(second))
+        XCTAssertEqual(activations, 1)
+        XCTAssertEqual(deactivations, 0)
+
+        // A row that no longer owns audio must not be able to release it.
+        coordinator.releaseAudio(for: first)
+        XCTAssertTrue(coordinator.isAudioOwner(second))
+        XCTAssertEqual(deactivations, 0)
+
+        // The feed must release its activation even when a viewer is open.
+        coordinator.beginFullScreen()
+        coordinator.releaseAudio(for: second)
+        XCTAssertFalse(coordinator.isAudioOwner(second))
+        XCTAssertEqual(deactivations, 1)
+        coordinator.endFullScreen()
+
+        coordinator.claimAudio(for: first)
+        coordinator.releaseAudio(for: first)
+        XCTAssertEqual(activations, 2)
+        XCTAssertEqual(deactivations, 2)
+    }
 }

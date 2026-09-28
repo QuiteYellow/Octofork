@@ -90,55 +90,253 @@ private actor OctonautMediaSaveCoordinator {
     }
 }
 
+/// Why a player does or does not carry its post's audio.
+///
+/// Reddit serves DASH video and audio as separate files, and every step of
+/// merging them can fail in a way that still produces a playable asset -- just
+/// a silent one. Recording the outcome makes a failed mux distinguishable from
+/// a video that genuinely has no sound.
+enum OctonautMuxOutcome: Equatable, Sendable {
+    /// No separate audio to merge: a GIF, or a self-contained file.
+    case notApplicable
+    case merged
+    case videoOnly(reason: String)
+
+    var failureReason: String? {
+        if case .videoOnly(let reason) = self { return reason }
+        return nil
+    }
+}
+
+/// Without an explicit category the app runs under `soloAmbient`, where the
+/// hardware silent switch mutes playback outright -- so unmuted audio would
+/// still be silent for anyone with their ringer off.
+/// Every `AVAudioSession` call is a synchronous XPC round trip to
+/// mediaserverd. Making those from the main thread on each viewer open and
+/// close does not merely stall the UI -- under the churn of scrolling, opening
+/// and dismissing repeatedly it takes the media server down with it, and once
+/// that happens every AVPlayer in the process is dead and playback cannot
+/// recover without relaunching:
+///
+///   AVAudioSession_iOS.mm:990  Invalid XPC connection, probably media server died
+///   PlayerRemoteXPC signalled err=-12860 (repeatedly, thereafter)
+///
+/// So the work happens on a private serial queue, the category is set once
+/// rather than per playback, activations are counted instead of toggled, and a
+/// deactivation is allowed to settle first -- a quick dismiss-then-reopen never
+/// reaches the session at all.
+final class OctonautAudioSession: @unchecked Sendable {
+    static let shared = OctonautAudioSession()
+
+    /// All mutable state below is confined to this queue, which is what makes
+    /// the unchecked `Sendable` conformance sound.
+    private let queue = DispatchQueue(label: "com.octonaut.audio-session", qos: .userInitiated)
+    private var isCategoryConfigured = false
+    private var activations = 0
+    private var pendingDeactivation: DispatchWorkItem?
+
+    private init() {}
+
+    static func activatePlayback() { shared.begin() }
+    static func deactivate() { shared.end() }
+
+    private func begin() {
+        queue.async { [self] in
+            pendingDeactivation?.cancel()
+            pendingDeactivation = nil
+
+            let session = AVAudioSession.sharedInstance()
+            if !isCategoryConfigured {
+                try? session.setCategory(.playback, mode: .moviePlayback)
+                isCategoryConfigured = true
+            }
+
+            activations += 1
+            guard activations == 1 else { return }
+            try? session.setActive(true)
+        }
+    }
+
+    private func end() {
+        queue.async { [self] in
+            activations = max(0, activations - 1)
+            guard activations == 0 else { return }
+
+            pendingDeactivation?.cancel()
+            let work = DispatchWorkItem { [self] in
+                guard activations == 0 else { return }
+                try? AVAudioSession.sharedInstance()
+                    .setActive(false, options: [.notifyOthersOnDeactivation])
+                pendingDeactivation = nil
+            }
+            pendingDeactivation = work
+            queue.asyncAfter(deadline: .now() + 2, execute: work)
+        }
+    }
+}
+
 @MainActor
 private enum OctonautAVPlayerFactory {
     fileprivate struct Playback {
         let player: AVPlayer
         let aspectRatio: CGFloat
+        var muxOutcome: OctonautMuxOutcome = .notApplicable
     }
 
     static func makePlayer(videoURL: URL, audioURL: URL?) async -> Playback {
         let videoAsset = AVURLAsset(url: videoURL)
         let aspectRatio = await aspectRatio(for: videoAsset)
         guard let audioURL, audioURL != videoURL else {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(asset: videoAsset),
+                aspectRatio: aspectRatio,
+                muxOutcome: .notApplicable
+            )
         }
-        let audioAsset = AVURLAsset(url: audioURL)
+        // Loading the two separately stops an audio failure -- the common
+        // case, since the audio filename is guessed -- from being reported as
+        // a video failure and from poisoning the video asset.
         let videoTracks: [AVAssetTrack]
-        let audioTracks: [AVAssetTrack]
         do {
             videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
-            audioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
+        } catch is CancellationError {
+            // A cancelled task is not a mux failure; the view is going away.
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .notApplicable
+            )
         } catch {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "video track load failed: \(error.localizedDescription)")
+            )
+        }
+
+        let audio = await loadAudio(preferred: audioURL, videoURL: videoURL)
+        let audioAsset = audio.asset
+        let audioTracks = audio.tracks
+        if let failure = audio.failure {
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: failure)
+            )
         }
         guard let videoTrack = videoTracks.first else {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "asset has no video track")
+            )
         }
 
         let composition = AVMutableComposition()
         guard let duration = try? await videoAsset.load(.duration) else {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "video duration unavailable")
+            )
         }
         do {
             guard let compositionVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else {
-                return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+                return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "could not add composition video track")
+            )
             }
             try compositionVideo.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: videoTrack, at: .zero)
             compositionVideo.preferredTransform = try await videoTrack.load(.preferredTransform)
-            if let audioTrack = audioTracks.first,
-               let compositionAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                let loadedAudioDuration = (try? await audioAsset.load(.duration)) ?? duration
-                let audioDuration = CMTimeMinimum(duration, loadedAudioDuration)
-                try compositionAudio.insertTimeRange(CMTimeRange(start: .zero, duration: audioDuration), of: audioTrack, at: .zero)
+
+            // An audio URL that yields no usable track is the quiet failure
+            // worth surfacing: the video plays, just silently.
+            guard let audioTrack = audioTracks.first else {
+                return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "audio URL returned no audio track")
+            )
             }
+            guard let compositionAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else {
+                return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "could not add composition audio track")
+            )
+            }
+            let loadedAudioDuration = (try? await audioAsset.load(.duration)) ?? duration
+            let audioDuration = CMTimeMinimum(duration, loadedAudioDuration)
+            try compositionAudio.insertTimeRange(CMTimeRange(start: .zero, duration: audioDuration), of: audioTrack, at: .zero)
+
             return Playback(
                 player: localPlaybackPlayer(item: AVPlayerItem(asset: composition)),
-                aspectRatio: aspectRatio
+                aspectRatio: aspectRatio,
+                muxOutcome: .merged
             )
         } catch {
-            return Playback(player: localPlaybackPlayer(asset: videoAsset), aspectRatio: aspectRatio)
+            return Playback(
+                player: localPlaybackPlayer(url: videoURL),
+                aspectRatio: aspectRatio,
+                muxOutcome: .videoOnly(reason: "composition failed: \(error.localizedDescription)")
+            )
         }
+    }
+
+    /// Reddit does not always publish the DASH audio filename the codec
+    /// guesses from the video URL. The manifest is authoritative about which
+    /// representations exist, so a miss is retried against it -- fetched only
+    /// on failure, so the common case costs nothing.
+    private static func loadAudio(
+        preferred audioURL: URL,
+        videoURL: URL
+    ) async -> (asset: AVURLAsset, tracks: [AVAssetTrack], failure: String?) {
+        if let hit = await audioTracks(at: audioURL) {
+            return (hit.asset, hit.tracks, nil)
+        }
+
+        if let resolved = await manifestAudioURL(for: videoURL), resolved != audioURL {
+            if let hit = await audioTracks(at: resolved) {
+                return (hit.asset, hit.tracks, nil)
+            }
+            return (
+                AVURLAsset(url: audioURL), [],
+                "no audio at \(audioURL.lastPathComponent) or \(resolved.lastPathComponent)"
+            )
+        }
+
+        return (
+            AVURLAsset(url: audioURL), [],
+            "no audio at \(audioURL.lastPathComponent); manifest lists none"
+        )
+    }
+
+    private static func audioTracks(
+        at url: URL
+    ) async -> (asset: AVURLAsset, tracks: [AVAssetTrack])? {
+        let asset = AVURLAsset(url: url)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .audio),
+              !tracks.isEmpty else {
+            return nil
+        }
+        return (asset, tracks)
+    }
+
+    private static func manifestAudioURL(for videoURL: URL) async -> URL? {
+        guard let manifestURL = RedditDASHManifest.manifestURL(for: videoURL),
+              let (data, _) = try? await URLSession.shared.data(from: manifestURL) else {
+            return nil
+        }
+        return RedditDASHManifest.media(from: data, manifestURL: manifestURL)?.audio
+    }
+
+    /// Builds the fallback player from a fresh asset. The one whose load just
+    /// failed carries that failure cached, and an item made from it can refuse
+    /// to ever become ready to play -- a silent video would become no video.
+    private static func localPlaybackPlayer(url: URL) -> AVPlayer {
+        localPlaybackPlayer(item: AVPlayerItem(asset: AVURLAsset(url: url)))
     }
 
     private static func aspectRatio(for asset: AVAsset) async -> CGFloat {
@@ -164,6 +362,66 @@ private enum OctonautAVPlayerFactory {
         player.usesExternalPlaybackWhileExternalScreenIsActive = false
         player.audiovisualBackgroundPlaybackPolicy = .pauses
         return player
+    }
+}
+
+/// Hands playback back and forth between a feed row and the full screen
+/// viewer.
+///
+/// Two problems it solves. A feed row behind a `fullScreenCover` never gets
+/// `onDisappear`, so without this it keeps playing underneath the viewer. And
+/// the viewer builds its own `AVPlayer`, so without a shared playhead it would
+/// always restart from zero rather than continuing from wherever the row had
+/// reached.
+@MainActor
+@Observable
+final class OctonautPlaybackCoordinator {
+    static let shared = OctonautPlaybackCoordinator()
+
+    /// While true the viewer owns playback and feed rows stay paused.
+    private(set) var isFullScreenActive = false
+
+    @ObservationIgnored private var positions: [URL: Double] = [:]
+    @ObservationIgnored private let activateAudio: @MainActor () -> Void
+    @ObservationIgnored private let deactivateAudio: @MainActor () -> Void
+
+    init(
+        activateAudio: @escaping @MainActor () -> Void = OctonautAudioSession.activatePlayback,
+        deactivateAudio: @escaping @MainActor () -> Void = OctonautAudioSession.deactivate
+    ) {
+        self.activateAudio = activateAudio
+        self.deactivateAudio = deactivateAudio
+    }
+
+    func position(for url: URL) -> Double? {
+        positions[url]
+    }
+
+    func record(_ seconds: Double, for url: URL) {
+        guard seconds.isFinite, seconds >= 0 else { return }
+        positions[url] = seconds
+    }
+
+    func beginFullScreen() { isFullScreenActive = true }
+    func endFullScreen() { isFullScreenActive = false }
+
+    /// Feed rows autoplay muted. Unmuting one claims audio, so two rows
+    /// visible at once can never talk over each other.
+    private(set) var audioOwner: URL?
+
+    func isAudioOwner(_ url: URL) -> Bool { audioOwner == url }
+
+    func claimAudio(for url: URL) {
+        guard audioOwner != url else { return }
+        if audioOwner == nil { activateAudio() }
+        audioOwner = url
+    }
+
+    func releaseAudio(for url: URL) {
+        guard audioOwner == url else { return }
+        audioOwner = nil
+        // The viewer has its own activation while it is audible.
+        deactivateAudio()
     }
 }
 
@@ -333,6 +591,32 @@ struct OctonautAsyncImage: View {
     }
 }
 
+/// Debug-build warning that a post's audio failed to merge. Reddit's DASH
+/// audio is a separate file, and when merging it falls through one of the
+/// fallback paths the video still plays -- silently. Without this, that is
+/// indistinguishable from a post that simply has no sound.
+///
+/// Release builds render nothing; the whole body is compiled out.
+struct OctonautMuxWarningBadge: View {
+    let outcome: OctonautMuxOutcome
+
+    var body: some View {
+#if DEBUG
+        if let reason = outcome.failureReason {
+            Label(reason, systemImage: "speaker.slash.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(.yellow.opacity(0.92), in: RoundedRectangle(cornerRadius: 7))
+                .padding(7)
+                .allowsHitTesting(false)
+                .accessibilityLabel("Debug: audio mux failed. \(reason)")
+        }
+#endif
+    }
+}
+
 struct OctonautInlineMediaView: View {
     @Environment(AppDependencies.self) private var dependencies
     let post: PostCardModel
@@ -342,6 +626,7 @@ struct OctonautInlineMediaView: View {
     @State private var isRevealed = false
     @State private var isVisibleInFeed = false
     @State private var networkStatus = OctonautNetworkStatus.shared
+    @State private var coordinator = OctonautPlaybackCoordinator.shared
 
     private let gallerySpacing: CGFloat = 4
     private let galleryHeight: CGFloat = 220
@@ -374,9 +659,11 @@ struct OctonautInlineMediaView: View {
                             autoplay: dependencies.settings.autoplayVideo.shouldAutoplay(
                                 isConnectedViaWiFi: networkStatus.isConnectedViaWiFi
                             ) && (preloader == nil || isVisibleInFeed),
+                            loops: post.mediaKind == "gif",
                             preloader: preloader
                         )
                         .overlay { openVideoButton }
+                        .overlay(alignment: .bottomTrailing) { feedMuteButton }
                     }
                 }
             } else if post.mediaKind == "embeddedVideo", let url = post.mediaURL,
@@ -520,6 +807,31 @@ struct OctonautInlineMediaView: View {
             .accessibilityLabel("Sensitive media. Tap to reveal.")
     }
 
+    /// Layered above `openVideoButton`, which covers the whole frame, so its
+    /// own taps are not swallowed by the open-full-screen action.
+    @ViewBuilder
+    private var feedMuteButton: some View {
+        if post.mediaKind == "video", let url = post.mediaURL {
+            let isAudible = coordinator.isAudioOwner(url)
+            Button {
+                if isAudible {
+                    coordinator.releaseAudio(for: url)
+                } else {
+                    coordinator.claimAudio(for: url)
+                }
+            } label: {
+                Image(systemName: isAudible ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(9)
+                    .background(.black.opacity(0.58), in: Circle())
+                    .padding(9)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isAudible ? "Mute video" : "Unmute video")
+        }
+    }
+
     private var openVideoButton: some View {
         Button { openOrReveal(at: 0) } label: {
             Color.clear
@@ -597,10 +909,22 @@ struct OctonautVideoPlayer: View {
     var audioURL: URL?
     var muted = true
     var autoplay = false
+    var loops = false
     var preloader: OctonautFeedMediaPreloader?
     @State private var player: AVPlayer?
     @State private var aspectRatio: CGFloat = 16 / 9
     @State private var playbackRequested = false
+    @State private var looper = OctonautVideoLooper()
+    @State private var positionObserver: Any?
+    @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
+
+    private var coordinator: OctonautPlaybackCoordinator { .shared }
+
+    /// The viewer takes over playback while it is open.
+    private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
+
+    /// `muted` is the caller's default; a row that has claimed audio overrides it.
+    private var effectiveMuted: Bool { muted && !coordinator.isAudioOwner(url) }
 
     private var playbackRequest: PlaybackRequest {
         PlaybackRequest(url: url, audioURL: audioURL)
@@ -612,6 +936,9 @@ struct OctonautVideoPlayer: View {
                 OctonautSystemIsolatedVideoPlayer(player: player, showsPlaybackControls: false)
                     .background(.black)
                     .aspectRatio(aspectRatio, contentMode: .fit)
+                    .overlay(alignment: .topLeading) {
+                        OctonautMuxWarningBadge(outcome: muxOutcome)
+                    }
             } else {
                 ZStack {
                     Color.black
@@ -621,7 +948,8 @@ struct OctonautVideoPlayer: View {
             }
         }
         .task(id: playbackRequest) {
-            playbackRequested = autoplay
+            playbackRequested = shouldPlay
+            removePositionObserver()
             player?.pause()
             player = nil
             let playback: OctonautAVPlayerFactory.Playback
@@ -631,26 +959,75 @@ struct OctonautVideoPlayer: View {
                 playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
             }
             guard !Task.isCancelled else { return }
-            playback.player.isMuted = muted
+            playback.player.isMuted = effectiveMuted
+            muxOutcome = playback.muxOutcome
             aspectRatio = playback.aspectRatio
+            if loops {
+                looper.attach(to: playback.player)
+            }
             player = playback.player
+            observePosition(of: playback.player)
             if playbackRequested {
                 playback.player.play()
             }
         }
-        .onChange(of: autoplay) { _, shouldAutoplay in
+        .onChange(of: effectiveMuted) { _, isNowMuted in
+            player?.isMuted = isNowMuted
+        }
+        .onChange(of: shouldPlay) { _, shouldAutoplay in
             playbackRequested = shouldAutoplay
             if shouldAutoplay {
+                // Resume wherever the viewer left off rather than where this
+                // row was when it handed playback over.
+                if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
+                    player?.seek(
+                        to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                        toleranceBefore: .zero,
+                        toleranceAfter: .zero
+                    )
+                }
                 player?.play()
             } else {
+                if let player {
+                    coordinator.record(player.currentTime().seconds, for: url)
+                }
                 player?.pause()
             }
         }
         .onDisappear {
             playbackRequested = false
+            coordinator.releaseAudio(for: url)
+            if let player {
+                coordinator.record(player.currentTime().seconds, for: url)
+            }
             player?.pause()
+            removePositionObserver()
+            looper.detach()
         }
         .accessibilityLabel("Video")
+    }
+
+    /// Records the playhead as it moves so opening the viewer can pick up from
+    /// where the row actually was, without depending on the order in which
+    /// SwiftUI delivers the full screen transition.
+    private func observePosition(of player: AVPlayer) {
+        removePositionObserver()
+        positionObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            MainActor.assumeIsolated {
+                guard !OctonautPlaybackCoordinator.shared.isFullScreenActive else { return }
+                OctonautPlaybackCoordinator.shared.record(time.seconds, for: url)
+            }
+        }
+    }
+
+    private func removePositionObserver() {
+        if let positionObserver, let player {
+            player.removeTimeObserver(positionObserver)
+        }
+        positionObserver = nil
     }
 
     private struct PlaybackRequest: Hashable {
@@ -910,6 +1287,9 @@ struct OctonautMediaViewer: View {
     @State private var dismissOffset: CGFloat = 0
     @State private var dismissalAxis: DismissalAxis?
     @State private var isDismissing = false
+    @State private var activePlayer: AVPlayer?
+    @State private var isPlayerMuted = false
+    @State private var chromeHideTask: Task<Void, Never>?
 
     private let saveCoordinator = OctonautMediaSaveCoordinator()
 
@@ -955,7 +1335,13 @@ struct OctonautMediaViewer: View {
                                 ForEach(Array(mediaURLs.enumerated()), id: \.offset) { index, url in
                                     Group {
                                         if post.mediaKind == "video" || post.mediaKind == "gif" {
-                                            OctonautVideoDetailView(url: url, audioURL: post.audioURL)
+                                            OctonautVideoDetailView(
+                                                url: url,
+                                                audioURL: post.audioURL,
+                                                loops: post.mediaKind == "gif",
+                                                startsMuted: post.mediaKind == "gif",
+                                                onPlayerChange: { activePlayer = $0 }
+                                            )
                                         } else if post.mediaKind == "embeddedVideo",
                                                   let embedURL = EmbeddedVideoURL.embedURL(for: url) {
                                             ZStack {
@@ -1012,102 +1398,7 @@ struct OctonautMediaViewer: View {
                     .ignoresSafeArea(.container, edges: .all)
                 }
 
-                if showOverlay {
-                    VStack(spacing: 0) {
-                        HStack {
-                        Button("Close", systemImage: "xmark") { dismiss() }
-                            .labelStyle(.iconOnly)
-                            .accessibilityLabel("Close media viewer")
-                        Spacer()
-                        Text("\(min(page + 1, max(mediaURLs.count, 1))) / \(max(mediaURLs.count, 1))")
-                            .font(.caption.weight(.semibold).monospacedDigit())
-                        Spacer()
-                        if let mediaURL = mediaURLs[safe: page] ?? post.mediaURL {
-                            Menu {
-                                Button { saveMedia(mediaURL, destination: .photos) } label: {
-                                    Label("Save to Photos", systemImage: "photo.badge.arrow.down")
-                                }
-                                if mediaURLs.count > 1 {
-                                    Button { saveAllMediaToPhotos() } label: {
-                                        Label("Save All Media to Photos", systemImage: "photo.stack")
-                                    }
-                                }
-                                Button { saveMedia(mediaURL, destination: .files) } label: {
-                                    Label("Save to Files", systemImage: "folder.badge.plus")
-                                }
-                            } label: {
-                                Image(systemName: "arrow.down.circle")
-                                    .font(.title3)
-                            }
-                            .disabled(isSaving)
-                            .opacity(isSaving || saveConfirmation != nil ? 0 : 1)
-                            .overlay {
-                                // Keep live feedback outside the native menu's label.
-                                Group {
-                                    if isSaving {
-                                        ProgressView()
-                                            .tint(.white)
-                                    } else if saveConfirmation != nil {
-                                        Image(systemName: "checkmark.circle")
-                                            .font(.title3)
-                                            .foregroundStyle(.white)
-                                    }
-                                }
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
-                            }
-                            .accessibilityLabel("Save media")
-                            .accessibilityValue(isSaving ? "Saving media" : saveConfirmation ?? "")
-                        }
-                        Menu {
-                            if let onSave {
-                                Button { onSave() } label: { Label(post.isSaved ? "Unsave" : "Save", systemImage: "bookmark") }
-                            }
-                            ShareLink(item: mediaURLs[safe: page] ?? post.shareURL) { Label("Share", systemImage: "square.and.arrow.up") }
-                            Button { onOpenPost?(); dismiss() } label: { Label("Open Post", systemImage: "doc.text") }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.title3)
-                        }
-                        .accessibilityLabel("Media actions")
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 10)
-                        .foregroundStyle(.white)
-                        .background(LinearGradient(colors: [.black.opacity(0.72), .clear], startPoint: .top, endPoint: .bottom))
-                        Spacer()
-                        if mediaURLs.count > 1 {
-                        HStack(spacing: 6) {
-                            ForEach(mediaURLs.indices, id: \.self) { index in
-                                Circle()
-                                    .fill(index == page ? .white : .white.opacity(0.38))
-                                    .frame(
-                                        width: index == page ? 7 : 6,
-                                        height: index == page ? 7 : 6
-                                    )
-                            }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(.black.opacity(0.45), in: Capsule())
-                        .padding(.bottom, post.title.isEmpty ? 16 : 4)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Image \(page + 1) of \(mediaURLs.count)")
-                        }
-                        if post.title != "" {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(post.title).font(.headline).lineLimit(3)
-                            Text("r/\(post.community) • \(post.score.formatted()) points")
-                                .font(.caption).foregroundStyle(.white.opacity(0.78))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                        .foregroundStyle(.white)
-                        .background(LinearGradient(colors: [.clear, .black.opacity(0.82)], startPoint: .top, endPoint: .bottom))
-                        }
-                    }
-                    .transition(.opacity)
-                }
+                chromeOverlay
             }
             .offset(y: dismissOffset)
             .scaleEffect(1 - (dismissalProgress * 0.08))
@@ -1117,6 +1408,23 @@ struct OctonautMediaViewer: View {
         .simultaneousGesture(dismissalGesture, isEnabled: !isZoomed && !isDismissing)
         .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { showOverlay.toggle() } }
         .onChange(of: page) { _, _ in isZoomed = false }
+        .onChange(of: activePlayer == nil) { _, hasNoPlayer in
+            if hasNoPlayer {
+                cancelChromeHide()
+            } else {
+                scheduleChromeHide()
+            }
+        }
+        .onChange(of: showOverlay) { _, isVisible in
+            // A tap that brings the chrome back restarts the countdown;
+            // hiding it manually stops the timer from fighting the user.
+            if isVisible && activePlayer != nil {
+                scheduleChromeHide()
+            } else if !isVisible {
+                cancelChromeHide()
+            }
+        }
+        .onDisappear { cancelChromeHide() }
         .onChange(of: saveConfirmation) { _, confirmation in
             if confirmation != nil {
                 showOverlay = true
@@ -1134,6 +1442,117 @@ struct OctonautMediaViewer: View {
             Button("OK", role: .cancel) { saveError = nil }
         } message: {
             Text(saveError ?? "The media could not be saved.")
+        }
+    }
+
+    /// Extracted from `body`: inlined, the viewer's chrome pushed the whole
+    /// expression past what the type-checker will solve in reasonable time.
+    @ViewBuilder
+    private var chromeOverlay: some View {
+        if showOverlay {
+            VStack(spacing: 0) {
+                HStack {
+                Button("Close", systemImage: "xmark") { dismiss() }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Close media viewer")
+                Spacer()
+                Text("\(min(page + 1, max(mediaURLs.count, 1))) / \(max(mediaURLs.count, 1))")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                Spacer()
+                if let mediaURL = mediaURLs[safe: page] ?? post.mediaURL {
+                    Menu {
+                        Button { saveMedia(mediaURL, destination: .photos) } label: {
+                            Label("Save to Photos", systemImage: "photo.badge.arrow.down")
+                        }
+                        if mediaURLs.count > 1 {
+                            Button { saveAllMediaToPhotos() } label: {
+                                Label("Save All Media to Photos", systemImage: "photo.stack")
+                            }
+                        }
+                        Button { saveMedia(mediaURL, destination: .files) } label: {
+                            Label("Save to Files", systemImage: "folder.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down.circle")
+                            .font(.title3)
+                    }
+                    .disabled(isSaving)
+                    .opacity(isSaving || saveConfirmation != nil ? 0 : 1)
+                    .overlay {
+                        // Keep live feedback outside the native menu's label.
+                        Group {
+                            if isSaving {
+                                ProgressView()
+                                    .tint(.white)
+                            } else if saveConfirmation != nil {
+                                Image(systemName: "checkmark.circle")
+                                    .font(.title3)
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                    }
+                    .accessibilityLabel("Save media")
+                    .accessibilityValue(isSaving ? "Saving media" : saveConfirmation ?? "")
+                }
+                Menu {
+                    if let onSave {
+                        Button { onSave() } label: { Label(post.isSaved ? "Unsave" : "Save", systemImage: "bookmark") }
+                    }
+                    ShareLink(item: mediaURLs[safe: page] ?? post.shareURL) { Label("Share", systemImage: "square.and.arrow.up") }
+                    Button { onOpenPost?(); dismiss() } label: { Label("Open Post", systemImage: "doc.text") }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
+                }
+                .accessibilityLabel("Media actions")
+                }
+                .padding(.horizontal)
+                .padding(.top, 10)
+                .foregroundStyle(.white)
+                .background(LinearGradient(colors: [.black.opacity(0.72), .clear], startPoint: .top, endPoint: .bottom))
+                Spacer()
+                if mediaURLs.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(mediaURLs.indices, id: \.self) { index in
+                        Circle()
+                            .fill(index == page ? .white : .white.opacity(0.38))
+                            .frame(
+                                width: index == page ? 7 : 6,
+                                height: index == page ? 7 : 6
+                            )
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.45), in: Capsule())
+                .padding(.bottom, post.title.isEmpty ? 16 : 4)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Image \(page + 1) of \(mediaURLs.count)")
+                }
+                if let activePlayer {
+                OctonautPlayerControls(
+                    player: activePlayer,
+                    isMuted: $isPlayerMuted,
+                    onInteraction: scheduleChromeHide
+                )
+                .padding(.horizontal, 10)
+                .padding(.bottom, post.title.isEmpty ? 10 : 4)
+                }
+                if post.title != "" {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(post.title).font(.headline).lineLimit(3)
+                    Text("r/\(post.community) • \(post.score.formatted()) points")
+                        .font(.caption).foregroundStyle(.white.opacity(0.78))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .foregroundStyle(.white)
+                .background(LinearGradient(colors: [.clear, .black.opacity(0.82)], startPoint: .top, endPoint: .bottom))
+                }
+            }
+            .transition(.opacity)
         }
     }
 
@@ -1173,6 +1592,25 @@ struct OctonautMediaViewer: View {
                     }
                 }
             }
+    }
+
+    /// Video chrome gets out of the way on its own, the way a player is
+    /// expected to behave. Images keep their chrome until tapped.
+    private func scheduleChromeHide() {
+        chromeHideTask?.cancel()
+        if !showOverlay {
+            withAnimation(.easeOut(duration: 0.2)) { showOverlay = true }
+        }
+        chromeHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) { showOverlay = false }
+        }
+    }
+
+    private func cancelChromeHide() {
+        chromeHideTask?.cancel()
+        chromeHideTask = nil
     }
 
     private func finishInteractiveDismissal(direction: CGFloat) {
@@ -1265,18 +1703,69 @@ struct OctonautMediaViewer: View {
     }
 }
 
+/// Restarts a player when it reaches the end. GIFs arrive as ordinary mp4s
+/// once the codec resolves their preview variant, so looping is what makes
+/// them read as GIFs rather than very short videos.
+@MainActor
+final class OctonautVideoLooper {
+    private var observer: (any NSObjectProtocol)?
+
+    func attach(to player: AVPlayer) {
+        detach()
+        player.actionAtItemEnd = .none
+        observer = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification,
+            object: player.currentItem,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                player.seek(to: .zero)
+                player.play()
+            }
+        }
+    }
+
+    func detach() {
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observer = nil
+    }
+}
+
 @MainActor
 struct OctonautVideoDetailView: View {
     let url: URL
     var audioURL: URL?
+    var loops = false
+    var autoplay = true
+    /// AVPlayerViewController's controls cannot be inset, so they collided
+    /// with the viewer's own chrome. The viewer draws `OctonautPlayerControls`
+    /// in its overlay stack instead.
+    var showsSystemControls = false
+    /// GIFs carry no audio track; real videos should open audible.
+    var startsMuted = false
+    var onPlayerChange: ((AVPlayer?) -> Void)?
     @State private var player: AVPlayer?
+    @State private var looper = OctonautVideoLooper()
+    @State private var positionObserver: Any?
+    @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
+    @State private var audioSessionActivated = false
+
+    private var coordinator: OctonautPlaybackCoordinator { .shared }
 
     var body: some View {
         ZStack {
             Color.black
             if let player {
-                OctonautSystemIsolatedVideoPlayer(player: player)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                OctonautSystemIsolatedVideoPlayer(
+                    player: player,
+                    showsPlaybackControls: showsSystemControls
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    OctonautMuxWarningBadge(outcome: muxOutcome)
+                }
             } else {
                 ProgressView()
                     .tint(.white)
@@ -1284,14 +1773,89 @@ struct OctonautVideoDetailView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: url) {
+            coordinator.beginFullScreen()
             let playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
-            playback.player.isMuted = true
+            guard !Task.isCancelled else { return }
+            playback.player.isMuted = startsMuted
+            muxOutcome = playback.muxOutcome
+
+            // The factory builds deliberately isolated players so feed rows
+            // cannot hijack a system AirPlay session. Here the viewer is front
+            // and centre and the user asked for the route, so allow it.
+            playback.player.allowsExternalPlayback = true
+
+            if !startsMuted && !audioSessionActivated {
+                audioSessionActivated = true
+                OctonautAudioSession.activatePlayback()
+            }
+            if loops {
+                looper.attach(to: playback.player)
+            }
+
+            // Assign the player before seeking. The async seek does not return
+            // until the item is ready to play, and on an asset that never
+            // becomes ready it never returns at all -- which left the viewer
+            // on a spinner forever while the same media played fine in the
+            // feed, where nothing seeks.
             player = playback.player
+            observePosition(of: playback.player)
+            onPlayerChange?(playback.player)
+
+            // Continue from wherever the feed row had reached.
+            if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
+                // Completion-handler form: the bare seek maps to async and
+                // would reintroduce the wait this fix removes.
+                playback.player.seek(
+                    to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero,
+                    completionHandler: { _ in }
+                )
+            }
+
+            if autoplay {
+                playback.player.play()
+            }
         }
-        .onDisappear { player?.pause() }
+        .onDisappear {
+            if let player {
+                coordinator.record(player.currentTime().seconds, for: url)
+            }
+            player?.pause()
+            removePositionObserver()
+            looper.detach()
+            onPlayerChange?(nil)
+            coordinator.endFullScreen()
+            if audioSessionActivated {
+                audioSessionActivated = false
+                OctonautAudioSession.deactivate()
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Video player")
     }
+
+    /// Keeps the shared playhead current so dismissing the viewer hands the
+    /// feed row back the position the user actually watched to.
+    private func observePosition(of player: AVPlayer) {
+        removePositionObserver()
+        positionObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.25, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            MainActor.assumeIsolated {
+                OctonautPlaybackCoordinator.shared.record(time.seconds, for: url)
+            }
+        }
+    }
+
+    private func removePositionObserver() {
+        if let positionObserver, let player {
+            player.removeTimeObserver(positionObserver)
+        }
+        positionObserver = nil
+    }
+
 }
 
 private extension Collection {
