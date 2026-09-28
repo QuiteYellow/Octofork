@@ -22,9 +22,11 @@ Just want to try it on iPhone? [TestFlight](https://testflight.apple.com/join/kR
 - Use native layouts for iPhone and iPad, including an iPad feed-detail split view.
 - Use a dedicated Mac interface with a sidebar, feed and detail columns, menus, keyboard shortcuts, and a native Settings window.
 
-## 🚀 Getting Started
+## 🚀 Getting Started/Contributing
 
 Below are instructions to build it from source. If you're interested in using this on an iPhone and want to skip the build, use the [TestFlight](https://testflight.apple.com/join/kRJfvUE6) link. (The iPad and macOS apps have much less polish.)
+
+If you want to contribute code, please target your pull requests onto the develop branch. (Pushes to main trigger TestFlight releases!)
 
 ### Prerequisites
 
