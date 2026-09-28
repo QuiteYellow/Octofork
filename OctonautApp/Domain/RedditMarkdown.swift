@@ -98,19 +98,12 @@ private struct RedditMarkdownTableView: View {
     let table: RedditMarkdownTable
 
     var body: some View {
+        let columnWidths = table.headers.indices.map(columnWidth(at:))
         ScrollView(.horizontal) {
-            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(table.headers.indices, id: \.self) { index in
-                        cell(table.headers[index], isHeader: true)
-                    }
-                }
+            VStack(spacing: 0) {
+                row(table.headers, columnWidths: columnWidths, isHeader: true)
                 ForEach(table.rows.indices, id: \.self) { rowIndex in
-                    GridRow {
-                        ForEach(table.headers.indices, id: \.self) { columnIndex in
-                            cell(value(at: columnIndex, in: table.rows[rowIndex]))
-                        }
-                    }
+                    row(table.rows[rowIndex], columnWidths: columnWidths)
                 }
             }
             .overlay {
@@ -128,23 +121,70 @@ private struct RedditMarkdownTableView: View {
         row.indices.contains(index) ? row[index] : ""
     }
 
-    private func cell(_ source: String, isHeader: Bool = false) -> some View {
+    private func columnWidth(at index: Int) -> CGFloat {
+        let longestCell = table.rows.map { value(at: index, in: $0).count }.max() ?? 0
+        let characterCount = max(table.headers[index].count, longestCell)
+        return min(320, max(88, CGFloat(characterCount) * 8 + 16))
+    }
+
+    private func row(
+        _ values: [String],
+        columnWidths: [CGFloat],
+        isHeader: Bool = false
+    ) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            ForEach(table.headers.indices, id: \.self) { index in
+                cell(
+                    value(at: index, in: values),
+                    width: columnWidths[index],
+                    isHeader: isHeader
+                )
+            }
+        }
+        .background(isHeader ? Color.secondary.opacity(0.14) : Color.clear)
+        .overlay {
+            GeometryReader { geometry in
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: geometry.size.height))
+                    path.addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height))
+                    var x: CGFloat = 0
+                    for width in columnWidths.dropLast() {
+                        x += width + 16
+                        path.move(to: CGPoint(x: x, y: 0))
+                        path.addLine(to: CGPoint(x: x, y: geometry.size.height))
+                    }
+                }
+                .stroke(Color.secondary.opacity(0.22), lineWidth: 0.5)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func cell(_ source: String, width: CGFloat, isHeader: Bool = false) -> some View {
         RedditSpoilerText(source: source)
             .id(source)
             .fontWeight(isHeader ? .semibold : .regular)
+            .frame(width: width, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(minWidth: 88, maxWidth: 180, alignment: .leading)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(isHeader ? Color.secondary.opacity(0.14) : Color.clear)
-            .overlay {
-                Rectangle().stroke(Color.secondary.opacity(0.22), lineWidth: 0.5)
-            }
     }
 }
 
 /// Converts the Markdown returned by Reddit into text SwiftUI can render on every platform.
 enum RedditPostMarkdown {
+    static func previewText(from source: String, maxCharacters: Int = 240) -> String {
+        for block in blocks(from: source) {
+            guard case .text(let text) = block else { continue }
+            let rendered = String(attributedString(from: text).characters)
+            let preview = rendered.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            guard !preview.isEmpty else { continue }
+            guard preview.count > maxCharacters else { return preview }
+            return String(preview.prefix(maxCharacters)) + "…"
+        }
+        return ""
+    }
+
     static func blocks(from source: String) -> [RedditMarkdownBlock] {
         let lines = source
             .replacingOccurrences(of: "\r\n", with: "\n")

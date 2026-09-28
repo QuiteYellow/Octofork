@@ -174,6 +174,10 @@ struct SettingsDetailView: View {
                     Text("Wi-Fi").tag(AutoplayVideo.wifi)
                     Text("Always").tag(AutoplayVideo.always)
                 }
+                Toggle("Play video audio in feed", isOn: Binding(
+                    get: { dependencies.settings.playFeedVideoAudio },
+                    set: { dependencies.settings.playFeedVideoAudio = $0 }
+                ))
             }
             Section("Large screens") {
                 Toggle("Use split view", isOn: Binding(

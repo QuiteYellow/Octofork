@@ -27,6 +27,7 @@ struct OctonautApp: App {
                 .environment(dependencies)
                 .id(dependencies.resetGeneration)
                 .task {
+                    await OctonautAudioSession.prepareForMutedFeedPlayback()
                     await OctonautImageCache.configure(
                         diskCapacityMB: dependencies.settings.imageCacheLimitMB
                     )

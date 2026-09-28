@@ -227,7 +227,7 @@ struct OctonautPostRow: View {
             if showsFlair, let flair = post.flair {
                 OctonautFlairPill(flair: flair)
             }
-            if !post.body.isEmpty {
+            if !post.body.isEmpty && (bodyLineLimit == nil || !bodyPreview.isEmpty) {
                 postBody
             }
             if post.hasMedia {
@@ -389,13 +389,25 @@ struct OctonautPostRow: View {
         }
     }
 
+    private var bodyPreview: String {
+        RedditPostMarkdown.previewText(from: post.body)
+    }
+
+    @ViewBuilder
     private var bodyText: some View {
-        RedditMarkdownView(source: post.body)
-            .font(.subheadline)
-            .foregroundStyle(theme.primaryText)
-            .tint(theme.accent)
-            .lineLimit(bodyLineLimit)
-            .multilineTextAlignment(.leading)
+        if let bodyLineLimit {
+            Text(bodyPreview)
+                .font(.subheadline)
+                .foregroundStyle(theme.primaryText)
+                .lineLimit(bodyLineLimit)
+                .multilineTextAlignment(.leading)
+        } else {
+            RedditMarkdownView(source: post.body)
+                .font(.subheadline)
+                .foregroundStyle(theme.primaryText)
+                .tint(theme.accent)
+                .multilineTextAlignment(.leading)
+        }
     }
 }
 

@@ -108,9 +108,9 @@ enum OctonautMuxOutcome: Equatable, Sendable {
     }
 }
 
-/// Without an explicit category the app runs under `soloAmbient`, where the
-/// hardware silent switch mutes playback outright -- so unmuted audio would
-/// still be silent for anyone with their ringer off.
+/// The default `soloAmbient` category interrupts other audio even when a feed
+/// player is muted. Playback with mixing keeps other apps audible while feed
+/// videos run and lets full screen video audio work with the silent switch on.
 /// Every `AVAudioSession` call is a synchronous XPC round trip to
 /// mediaserverd. Making those from the main thread on each viewer open and
 /// close does not merely stall the UI -- under the churn of scrolling, opening
@@ -137,23 +137,44 @@ final class OctonautAudioSession: @unchecked Sendable {
 
     private init() {}
 
+    static func prepareForMutedFeedPlayback() async {
+        await withCheckedContinuation { continuation in
+            shared.queue.async {
+                shared.configureCategoryIfNeeded()
+                continuation.resume()
+            }
+        }
+    }
+
     static func activatePlayback() { shared.begin() }
     static func deactivate() { shared.end() }
+
+    private func configureCategoryIfNeeded() {
+        guard !isCategoryConfigured else { return }
+        // A muted AVPlayer can still activate the app's audio session. Mix
+        // with other apps so scrolling past a feed video leaves their audio on.
+        do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .moviePlayback,
+                options: [.mixWithOthers]
+            )
+            isCategoryConfigured = true
+        } catch {
+            // Retry on the next activation if mediaserverd is temporarily down.
+        }
+    }
 
     private func begin() {
         queue.async { [self] in
             pendingDeactivation?.cancel()
             pendingDeactivation = nil
 
-            let session = AVAudioSession.sharedInstance()
-            if !isCategoryConfigured {
-                try? session.setCategory(.playback, mode: .moviePlayback)
-                isCategoryConfigured = true
-            }
+            configureCategoryIfNeeded()
 
             activations += 1
             guard activations == 1 else { return }
-            try? session.setActive(true)
+            try? AVAudioSession.sharedInstance().setActive(true)
         }
     }
 
@@ -405,8 +426,9 @@ final class OctonautPlaybackCoordinator {
     func beginFullScreen() { isFullScreenActive = true }
     func endFullScreen() { isFullScreenActive = false }
 
-    /// Feed rows autoplay muted. Unmuting one claims audio, so two rows
-    /// visible at once can never talk over each other.
+    /// Feed rows autoplay muted unless the feed audio setting is enabled.
+    /// A row claims audio while it plays so two visible rows cannot talk over
+    /// each other.
     private(set) var audioOwner: URL?
 
     func isAudioOwner(_ url: URL) -> Bool { audioOwner == url }
@@ -483,6 +505,7 @@ final class OctonautFeedMediaPreloader {
         if let task = videoTasks[key] { return task }
 
         let task = Task { @MainActor in
+            await OctonautAudioSession.prepareForMutedFeedPlayback()
             let playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
             _ = try? await playback.player.currentItem?.asset.load(.isPlayable)
             if playback.player.status == .readyToPlay {
@@ -626,7 +649,6 @@ struct OctonautInlineMediaView: View {
     @State private var isRevealed = false
     @State private var isVisibleInFeed = false
     @State private var networkStatus = OctonautNetworkStatus.shared
-    @State private var coordinator = OctonautPlaybackCoordinator.shared
 
     private let gallerySpacing: CGFloat = 4
     private let galleryHeight: CGFloat = 220
@@ -664,7 +686,7 @@ struct OctonautInlineMediaView: View {
                         OctonautVideoPlayer(
                             url: url,
                             audioURL: post.audioURL,
-                            muted: true,
+                            playAudio: dependencies.settings.playFeedVideoAudio,
                             autoplay: dependencies.settings.autoplayVideo.shouldAutoplay(
                                 isConnectedViaWiFi: networkStatus.isConnectedViaWiFi
                             ) && (preloader == nil || isVisibleInFeed),
@@ -672,7 +694,6 @@ struct OctonautInlineMediaView: View {
                             preloader: preloader
                         )
                         .overlay { openVideoButton }
-                        .overlay(alignment: .bottomTrailing) { feedMuteButton }
                     }
                 }
             } else if post.mediaKind == "embeddedVideo", let url = post.mediaURL,
@@ -816,31 +837,6 @@ struct OctonautInlineMediaView: View {
             .accessibilityLabel("Sensitive media. Tap to reveal.")
     }
 
-    /// Layered above `openVideoButton`, which covers the whole frame, so its
-    /// own taps are not swallowed by the open-full-screen action.
-    @ViewBuilder
-    private var feedMuteButton: some View {
-        if post.mediaKind == "video", let url = post.mediaURL {
-            let isAudible = coordinator.isAudioOwner(url)
-            Button {
-                if isAudible {
-                    coordinator.releaseAudio(for: url)
-                } else {
-                    coordinator.claimAudio(for: url)
-                }
-            } label: {
-                Image(systemName: isAudible ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(9)
-                    .background(.black.opacity(0.58), in: Circle())
-                    .padding(9)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isAudible ? "Mute video" : "Unmute video")
-        }
-    }
-
     private var openVideoButton: some View {
         Button { openOrReveal(at: 0) } label: {
             Color.clear
@@ -916,7 +912,7 @@ private struct OctonautEmbeddedVideoView: UIViewRepresentable {
 struct OctonautVideoPlayer: View {
     let url: URL
     var audioURL: URL?
-    var muted = true
+    var playAudio = false
     var autoplay = false
     var loops = false
     var preloader: OctonautFeedMediaPreloader?
@@ -926,14 +922,12 @@ struct OctonautVideoPlayer: View {
     @State private var looper = OctonautVideoLooper()
     @State private var positionObserver: Any?
     @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
-
-    private var coordinator: OctonautPlaybackCoordinator { .shared }
+    @State private var coordinator = OctonautPlaybackCoordinator.shared
 
     /// The viewer takes over playback while it is open.
     private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
 
-    /// `muted` is the caller's default; a row that has claimed audio overrides it.
-    private var effectiveMuted: Bool { muted && !coordinator.isAudioOwner(url) }
+    private var effectiveMuted: Bool { !playAudio || !coordinator.isAudioOwner(url) }
 
     private var playbackRequest: PlaybackRequest {
         PlaybackRequest(url: url, audioURL: audioURL)
@@ -957,6 +951,7 @@ struct OctonautVideoPlayer: View {
             }
         }
         .task(id: playbackRequest) {
+            await OctonautAudioSession.prepareForMutedFeedPlayback()
             playbackRequested = shouldPlay
             removePositionObserver()
             player?.pause()
@@ -968,7 +963,6 @@ struct OctonautVideoPlayer: View {
                 playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
             }
             guard !Task.isCancelled else { return }
-            playback.player.isMuted = effectiveMuted
             muxOutcome = playback.muxOutcome
             aspectRatio = playback.aspectRatio
             if loops {
@@ -976,6 +970,8 @@ struct OctonautVideoPlayer: View {
             }
             player = playback.player
             observePosition(of: playback.player)
+            updateAudioOwnership()
+            playback.player.isMuted = effectiveMuted
             if playbackRequested {
                 playback.player.play()
             }
@@ -985,6 +981,7 @@ struct OctonautVideoPlayer: View {
         }
         .onChange(of: shouldPlay) { _, shouldAutoplay in
             playbackRequested = shouldAutoplay
+            updateAudioOwnership()
             if shouldAutoplay {
                 // Resume wherever the viewer left off rather than where this
                 // row was when it handed playback over.
@@ -1003,6 +1000,9 @@ struct OctonautVideoPlayer: View {
                 player?.pause()
             }
         }
+        .onChange(of: playAudio) { _, _ in
+            updateAudioOwnership()
+        }
         .onDisappear {
             playbackRequested = false
             coordinator.releaseAudio(for: url)
@@ -1014,6 +1014,15 @@ struct OctonautVideoPlayer: View {
             looper.detach()
         }
         .accessibilityLabel("Video")
+    }
+
+    private func updateAudioOwnership() {
+        if playAudio && shouldPlay && player != nil {
+            coordinator.claimAudio(for: url)
+        } else {
+            coordinator.releaseAudio(for: url)
+        }
+        player?.isMuted = effectiveMuted
     }
 
     /// Records the playhead as it moves so opening the viewer can pick up from
