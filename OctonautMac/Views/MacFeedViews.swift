@@ -192,8 +192,10 @@ private struct MacPostMediaCard: View {
 
     private var shouldBlurMedia: Bool {
         guard !revealsSensitiveMedia else { return false }
-        return (post.isNSFW && dependencies.settings.blurNSFWMedia)
-            || (post.isSpoiler && dependencies.settings.blurSpoilers)
+        return post.isSensitive(
+            blurringNSFW: dependencies.settings.blurNSFWMedia,
+            blurringSpoilers: dependencies.settings.blurSpoilers
+        )
     }
 
     var body: some View {
@@ -800,8 +802,10 @@ private struct MacMediaLightboxView: View {
 
     private var shouldBlurMedia: Bool {
         guard !isRevealed else { return false }
-        return (post.isNSFW && dependencies.settings.blurNSFWMedia)
-            || (post.isSpoiler && dependencies.settings.blurSpoilers)
+        return post.isSensitive(
+            blurringNSFW: dependencies.settings.blurNSFWMedia,
+            blurringSpoilers: dependencies.settings.blurSpoilers
+        )
     }
 
     private var mediaURLs: [URL] {

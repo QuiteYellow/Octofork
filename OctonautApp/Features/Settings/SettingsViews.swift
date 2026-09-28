@@ -40,7 +40,6 @@ struct SettingsDetailView: View {
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
     @Environment(AppDependencies.self) private var dependencies
-    @AppStorage("appearance.showUsername") private var showUsername = true
     @State private var showingReset = false
     @State private var showingAppReset = false
     @State private var isResettingApp = false
@@ -133,6 +132,9 @@ struct SettingsDetailView: View {
             Section("Sorting") {
                 Picker("Default post sort", selection: Binding(get: { dependencies.settings.defaultPostSort }, set: { dependencies.settings.defaultPostSort = $0 })) {
                     ForEach(["default", "best", "hot", "new", "top", "rising", "controversial"], id: \.self) { value in Text(value.capitalized).tag(PostSort(rawValue: value)) }
+                }
+                Picker("Default top time", selection: Binding(get: { dependencies.settings.defaultTopTime }, set: { dependencies.settings.defaultTopTime = $0 })) {
+                    ForEach(TopTime.allCases, id: \.self) { value in Text(value.title).tag(value) }
                 }
                 Picker("Default comment sort", selection: Binding(get: { dependencies.settings.defaultCommentSort }, set: { dependencies.settings.defaultCommentSort = $0 })) {
                     ForEach(["best", "new", "top", "controversial", "old", "qa"], id: \.self) { value in Text(value == "qa" ? "Q&A" : value.capitalized).tag(CommentSort(rawValue: value)) }
@@ -296,7 +298,7 @@ struct SettingsDetailView: View {
     private var account: some View {
         Section {
             NavigationLink(value: FeatureRoute.account(store.accounts.first?.username ?? "Accounts")) { Label("Manage Accounts", systemImage: "person.2") }
-            Toggle("Show username in Account tab", isOn: $showUsername)
+            Toggle("Show username in Account tab", isOn: Binding(get: { dependencies.settings.showUsernameInAccountTab }, set: { dependencies.settings.showUsernameInAccountTab = $0 }))
             Toggle("Confirm account switch while composing", isOn: Binding(get: { dependencies.settings.confirmAccountSwitchWhileComposing }, set: { dependencies.settings.confirmAccountSwitchWhileComposing = $0 }))
             Text("Account sessions are isolated. Removing an account also removes its Keychain credential and private cached data.")
                 .font(.footnote).foregroundStyle(.secondary)

@@ -119,7 +119,7 @@ struct OctonautTabsView: View {
                 FloatingTabBar(
                     selection: $selectedTab,
                     unreadCount: store.unreadCount,
-                    accountTitle: dependencies.accounts.selectedAccount?.username ?? "Account"
+                    accountTitle: accountTabTitle(whenSignedOut: "Account")
                 )
                 .padding(.horizontal, 24)
                 .padding(.bottom, 14)
@@ -183,6 +183,14 @@ struct OctonautTabsView: View {
             handleIncomingURL(url)
             return .handled
         })
+    }
+
+    /// The signed-in username doubles as the Account tab's label, so it is
+    /// suppressed when the user has turned that off.
+    private func accountTabTitle(whenSignedOut fallback: String) -> String {
+        guard dependencies.settings.showUsernameInAccountTab,
+              let username = dependencies.accounts.selectedAccount?.username else { return fallback }
+        return username
     }
 
     private var accountStateKey: String {
@@ -250,7 +258,7 @@ struct OctonautTabsView: View {
                 tabContent(for: .inbox)
             }
                 .badge(store.unreadCount)
-            Tab(dependencies.accounts.selectedAccount?.username ?? "Accounts", systemImage: "person.crop.circle", value: AppTab.account) {
+            Tab(accountTabTitle(whenSignedOut: "Accounts"), systemImage: "person.crop.circle", value: AppTab.account) {
                 tabContent(for: .account)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
@@ -766,6 +774,8 @@ struct OctonautDestinationView: View {
             ConversationView(itemID: id, store: store, router: router)
         case .account(let username):
             UserProfileView(username: username, store: store, router: router)
+        case .userSection(let username, let section):
+            UserSectionView(username: username, section: section, store: store)
         case .settings(let destination):
             SettingsDetailView(destination: destination, store: store, router: router)
         case .composer(let kind):
