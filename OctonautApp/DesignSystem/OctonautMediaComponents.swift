@@ -933,6 +933,7 @@ struct OctonautMediaViewer: View {
     init(
         post: PostCardModel,
         initialPage: Int = 0,
+        initiallyRevealed: Bool = false,
         onSave: (() -> Void)? = nil,
         onOpenPost: (() -> Void)? = nil
     ) {
@@ -940,6 +941,7 @@ struct OctonautMediaViewer: View {
         self.onSave = onSave
         self.onOpenPost = onOpenPost
         _page = State(initialValue: max(initialPage, 0))
+        _isRevealed = State(initialValue: initiallyRevealed)
     }
 
     private var mediaURLs: [URL] {
@@ -978,6 +980,7 @@ struct OctonautMediaViewer: View {
                                             ZStack {
                                                 OctonautEmbeddedVideoView(url: embedURL)
                                                     .aspectRatio(16 / 9, contentMode: .fit)
+                                                    .blur(radius: shouldBlurMedia ? 24 : 0)
                                                 if shouldBlurMedia {
                                                     Button { isRevealed = true } label: {
                                                         VStack(spacing: 7) {
@@ -999,6 +1002,7 @@ struct OctonautMediaViewer: View {
                                                     accessibilityLabel: "Image \(index + 1) of \(mediaURLs.count)",
                                                     onZoomChange: { isZoomed = $0 }
                                                 )
+                                                .blur(radius: shouldBlurMedia ? 24 : 0)
                                                 if shouldBlurMedia {
                                                     Button { isRevealed = true } label: {
                                                         VStack(spacing: 7) {

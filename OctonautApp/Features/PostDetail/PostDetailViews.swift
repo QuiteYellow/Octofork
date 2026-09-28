@@ -432,7 +432,7 @@ struct GalleryView: View {
         .task { await store.refreshPosts(for: descriptor) }
         .refreshable { await store.refreshPosts(for: descriptor, forceRefresh: true) }
         .fullScreenCover(item: $selectedItem) { item in
-            OctonautMediaViewer(post: item.post, initialPage: item.page, onOpenPost: {
+            OctonautMediaViewer(post: item.post, initialPage: item.page, initiallyRevealed: revealsSensitiveMedia, onOpenPost: {
                 selectedItem = nil
                 router.push(.post(item.post))
             })
