@@ -177,6 +177,7 @@ struct SettingsDetailView: View {
                 Picker("Thumbnail side", selection: Binding(get: { dependencies.settings.compactThumbnailSide }, set: { dependencies.settings.compactThumbnailSide = $0 })) { Text("Left").tag(CompactThumbnailSide.left); Text("Right").tag(CompactThumbnailSide.right) }
                 Toggle("Show community icons", isOn: Binding(get: { dependencies.settings.showCommunityIcons }, set: { dependencies.settings.showCommunityIcons = $0 }))
                 Toggle("Show post flair", isOn: Binding(get: { dependencies.settings.showPostFlair }, set: { dependencies.settings.showPostFlair = $0 }))
+                Toggle("Collapse AutoModerator comments", isOn: Binding(get: { dependencies.settings.collapseAutoModeratorComments }, set: { dependencies.settings.collapseAutoModeratorComments = $0 }))
                 Toggle("Blur spoilers", isOn: Binding(get: { dependencies.settings.blurSpoilers }, set: { dependencies.settings.blurSpoilers = $0 }))
                 Toggle("Blur NSFW media", isOn: Binding(get: { dependencies.settings.blurNSFWMedia }, set: { dependencies.settings.blurNSFWMedia = $0 }))
                 Toggle("Show filter count", isOn: Binding(get: { dependencies.settings.showFilterCount }, set: { dependencies.settings.showFilterCount = $0 }))

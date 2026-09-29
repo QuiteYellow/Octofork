@@ -14,6 +14,7 @@ Every setting has a typed key, the default below, and a short explanation in the
 | Self-text preview lines | Integer 0 to 20, default 3 | Zero hides self-text preview in feeds. |
 | Link-description lines | Integer 0 to 20, default 10 | Zero hides fetched descriptions. |
 | Show post flair | Bool, default On | Displays flair when present. |
+| Collapse AutoModerator comments | Bool, default Off | Collapses a top-level comment by AutoModerator when a thread is opened. The reader can expand it; nothing is hidden. |
 | Blur spoilers | Bool, default On | Requires an explicit reveal per presentation. |
 | Blur NSFW media | Bool, default On | Requires an explicit reveal per presentation. |
 | Show post summaries | Bool, default On when local model available, otherwise Off | Enables eligible on-device post summaries. |
