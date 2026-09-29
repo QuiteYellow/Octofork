@@ -24,6 +24,10 @@ private actor OctonautImageDataCache {
         self.session = URLSession(configuration: configuration)
     }
 
+    /// The actor's only job is the in-flight table: one request per URL, however
+    /// many rows ask for it. Everything that blocks -- the cache lookup, the
+    /// transfer, the write back -- happens in `load`, which is `nonisolated` and
+    /// so runs off this actor.
     func data(for url: URL) async throws -> Data {
         if let task = inFlight[url] {
             return try await task.value
@@ -32,25 +36,8 @@ private actor OctonautImageDataCache {
         var request = URLRequest(url: url)
         request.cachePolicy = .returnCacheDataElseLoad
 
-        if let cached = cache.cachedResponse(for: request) {
-            return cached.data
-        }
-
         let task = Task { [session, cache] in
-            let (data, response) = try await session.data(for: request)
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200..<300).contains(httpResponse.statusCode) {
-                throw URLError(.badServerResponse)
-            }
-            guard !data.isEmpty else { throw URLError(.zeroByteResource) }
-
-            // Reddit's image hosts do not always return cache headers that are
-            // useful to an app feed. Store a replaceable local copy explicitly.
-            cache.storeCachedResponse(
-                CachedURLResponse(response: response, data: data, storagePolicy: .allowed),
-                for: request
-            )
-            return data
+            try await Self.load(request: request, session: session, cache: cache)
         }
         inFlight[url] = task
 
@@ -66,6 +53,40 @@ private actor OctonautImageDataCache {
             }
             throw error
         }
+    }
+
+    /// `nonisolated` on purpose, and the whole point of this type's shape.
+    ///
+    /// An unstructured `Task` started inside an actor inherits that actor's
+    /// isolation, so a body like this one written inline runs *on* the actor:
+    /// `URLCache.cachedResponse(for:)` reads the disk and
+    /// `storeCachedResponse(_:for:)` writes it, both synchronously, on the one
+    /// executor every image in the app funnels through. One image's disk access
+    /// then delays every other image's request, including the one the reader is
+    /// looking at. A `nonisolated` async function is the hop off.
+    private nonisolated static func load(
+        request: URLRequest,
+        session: URLSession,
+        cache: URLCache
+    ) async throws -> Data {
+        if let cached = cache.cachedResponse(for: request) {
+            return cached.data
+        }
+
+        let (data, response) = try await session.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard !data.isEmpty else { throw URLError(.zeroByteResource) }
+
+        // Reddit's image hosts do not always return cache headers that are
+        // useful to an app feed. Store a replaceable local copy explicitly.
+        cache.storeCachedResponse(
+            CachedURLResponse(response: response, data: data, storagePolicy: .allowed),
+            for: request
+        )
+        return data
     }
 
     func configure(diskCapacityMB: Int) {
