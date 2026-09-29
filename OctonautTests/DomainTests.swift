@@ -1435,4 +1435,91 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(activations, 2)
         XCTAssertEqual(deactivations, 2)
     }
+
+    func testPrefetchQueueAdmitsOnlyUpToItsBoundAndKeepsTheRestWaiting() {
+        var queue = OctonautPrefetchQueue(maximumConcurrent: 2)
+        let urls = (0..<4).map { URL(string: "octonaut-test://warm/\($0).jpg")! }
+        for url in urls {
+            XCTAssertTrue(queue.enqueue(url))
+        }
+        // A URL already known is not taken on a second time.
+        XCTAssertFalse(queue.enqueue(urls[0]))
+        XCTAssertEqual(queue.waitingCount, 4)
+
+        XCTAssertEqual(queue.startNext(), urls[0])
+        XCTAssertEqual(queue.startNext(), urls[1])
+        XCTAssertNil(queue.startNext(), "the bound is reached, so nothing more may start")
+        XCTAssertEqual(queue.activeCount, 2)
+        XCTAssertEqual(queue.waitingCount, 2)
+
+        // Finishing one lets exactly one more go, in the order it arrived.
+        queue.finish(urls[0])
+        XCTAssertEqual(queue.startNext(), urls[2])
+        XCTAssertNil(queue.startNext())
+    }
+
+    func testPrefetchQueueForgetsARowThatAgedOutWhetherOrNotItStarted() {
+        var queue = OctonautPrefetchQueue(maximumConcurrent: 1)
+        let started = URL(string: "octonaut-test://warm/started.jpg")!
+        let waiting = URL(string: "octonaut-test://warm/waiting.jpg")!
+        XCTAssertTrue(queue.enqueue(started))
+        XCTAssertTrue(queue.enqueue(waiting))
+        XCTAssertEqual(queue.startNext(), started)
+
+        queue.remove(waiting)
+        XCTAssertFalse(queue.contains(waiting))
+        queue.remove(started)
+        XCTAssertFalse(queue.contains(started))
+        XCTAssertNil(queue.startNext())
+
+        XCTAssertTrue(queue.enqueue(started))
+        XCTAssertEqual(queue.startNext(), started)
+        XCTAssertEqual(queue.cancelAll(), [started], "cancelAll reports what had started")
+        XCTAssertEqual(queue.activeCount, 0)
+        XCTAssertEqual(queue.waitingCount, 0)
+    }
+
+    func testLowPowerModeStopsPrefetchOnlyWhenTheReaderAsksForIt() {
+        XCTAssertTrue(OctonautPrefetchPolicy.allowsPrefetch(
+            isLowPowerModeEnabled: false, respectsLowPowerMode: true
+        ))
+        XCTAssertTrue(OctonautPrefetchPolicy.allowsPrefetch(
+            isLowPowerModeEnabled: true, respectsLowPowerMode: false
+        ))
+        XCTAssertFalse(OctonautPrefetchPolicy.allowsPrefetch(
+            isLowPowerModeEnabled: true, respectsLowPowerMode: true
+        ))
+    }
+
+    func testPrefetchAsksForLessOfTheConnectionThanAVisibleRead() {
+        XCTAssertLessThan(
+            OctonautImageLoadPriority.prefetch.httpPriority,
+            OctonautImageLoadPriority.visible.httpPriority
+        )
+        XCTAssertLessThan(
+            OctonautImageLoadPriority.prefetch.decodePriority,
+            OctonautImageLoadPriority.visible.decodePriority
+        )
+    }
+
+    @MainActor
+    func testPreloaderStopsAndCancelsWarmingWhenPrefetchIsDisallowed() {
+        let preloader = OctonautFeedMediaPreloader()
+        var post = PostCardModel.sample
+        post.hasMedia = true
+        post.mediaKind = "image"
+        // An unsupported scheme: the warming task fails without a request
+        // leaving the machine, which is what keeps this test off the network.
+        post.mediaURL = URL(string: "octonaut-test://warm/post.jpg")
+
+        preloader.preload(posts: [post], compact: false)
+        XCTAssertEqual(preloader.prefetchQueue.activeCount, 1)
+
+        preloader.allowsPrefetch = false
+        XCTAssertEqual(preloader.prefetchQueue.activeCount, 0)
+        XCTAssertEqual(preloader.prefetchQueue.waitingCount, 0)
+
+        preloader.preload(posts: [post], compact: false)
+        XCTAssertEqual(preloader.prefetchQueue.activeCount, 0, "a disallowed preload takes nothing on")
+    }
 }
