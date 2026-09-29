@@ -266,6 +266,56 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(bestRoute.query.first(where: { $0.name == "sort" })?.value, "confidence")
     }
 
+    func testPostRouteBoundsTheCommentPayload() {
+        let route = URLSessionRedditClient.postRoute(
+            for: URL(string: "https://www.reddit.com/r/swift/comments/abc123/a_thread/")!,
+            sort: .top
+        )
+        let query = Dictionary(uniqueKeysWithValues: route.query.compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+
+        XCTAssertEqual(route.path, "/r/swift/comments/abc123/a_thread/.json")
+        XCTAssertEqual(query["raw_json"], "1")
+        XCTAssertEqual(query["sort"], "top")
+        XCTAssertEqual(query["limit"], String(URLSessionRedditClient.commentLimit))
+        XCTAssertEqual(query["depth"], String(URLSessionRedditClient.commentDepth))
+    }
+
+    func testPostRouteKeepsCommentContextAndLetsThePermalinkWin() {
+        let route = URLSessionRedditClient.postRoute(
+            for: URL(string: "https://www.reddit.com/r/swift/comments/abc123/a_thread/?comment=def456&context=3&depth=1")!,
+            sort: .top
+        )
+        let names = route.query.map(\.name)
+
+        // A link into one comment's context keeps both parameters, and its own
+        // depth is not overridden by the default.
+        XCTAssertEqual(route.query.first(where: { $0.name == "comment" })?.value, "def456")
+        XCTAssertEqual(route.query.first(where: { $0.name == "context" })?.value, "3")
+        XCTAssertEqual(route.query.first(where: { $0.name == "depth" })?.value, "1")
+        XCTAssertEqual(names.filter { $0 == "depth" }.count, 1)
+        // The bound the link did not supply is still applied.
+        XCTAssertEqual(
+            route.query.first(where: { $0.name == "limit" })?.value,
+            String(URLSessionRedditClient.commentLimit)
+        )
+    }
+
+    func testPostRouteNeverRepeatsAParameter() {
+        let route = URLSessionRedditClient.postRoute(
+            for: URL(string: "https://www.reddit.com/r/swift/comments/abc123/a_thread/?sort=new&raw_json=0&limit=5")!,
+            sort: .top
+        )
+        let names = route.query.map(\.name)
+
+        XCTAssertEqual(Set(names).count, names.count, "duplicate query parameters: \(names)")
+        XCTAssertEqual(route.query.first(where: { $0.name == "sort" })?.value, "new")
+        XCTAssertEqual(route.query.first(where: { $0.name == "limit" })?.value, "5")
+        // raw_json is the one parameter the permalink does not get to change.
+        XCTAssertEqual(route.query.first(where: { $0.name == "raw_json" })?.value, "1")
+    }
+
     func testCommunityCodecPrefersCommunityIconAndFallsBackToLegacyIcon() throws {
         let data = Data(
             #"{"data":{"after":null,"before":null,"children":[{"kind":"t5","data":{"display_name":"Swift","community_icon":"https://styles.redditmedia.com/swift.png","icon_img":"https://styles.redditmedia.com/legacy-swift.png"}},{"kind":"t5","data":{"display_name":"iPhone","community_icon":"","icon_img":"https://styles.redditmedia.com/iphone.png"}}]}}"#.utf8
