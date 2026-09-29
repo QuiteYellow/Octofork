@@ -192,15 +192,11 @@ actor URLSessionRedditClient: RedditClient {
     }
 
     func post(_ permalink: URL, sort: CommentSort, account: AccountID? = nil) async throws -> PostThread {
-        let route = postJSONRoute(for: permalink)
-        let query = [
-            URLQueryItem(name: "raw_json", value: "1"),
-            URLQueryItem(name: "sort", value: sort.rawValue)
-        ]
+        let route = Self.postRoute(for: permalink, sort: sort)
         let data = try await requestData(
             method: "GET",
             path: route.path,
-            query: query + route.query,
+            query: route.query,
             body: nil,
             account: account,
             retryable: true
@@ -629,13 +625,59 @@ actor URLSessionRedditClient: RedditClient {
         "/user/\(pathSegment(username))/\(section.rawValue).json"
     }
 
-    private func postJSONRoute(for permalink: URL) -> (path: String, query: [URLQueryItem]) {
-        var components = URLComponents(url: permalink, resolvingAgainstBaseURL: false)
+    /// How much of a comment tree one request asks for.
+    ///
+    /// Sent without them, `{permalink}.json` returns Reddit's default tree
+    /// whole. On a busy thread that is a large JSON body to transfer and
+    /// decode before the first comment can be drawn, nearly all of it far
+    /// below the fold.
+    ///
+    /// Both reference clients bound it -- Winston asks for `limit: 35,
+    /// depth: 15`, Hydra for `limit: 75`. These sit above both, because
+    /// Octonaut renders a thread as one flattened list rather than paging it
+    /// in as the reader scrolls, so a tighter cap would turn ordinary reading
+    /// into repeated taps. What the cap sheds arrives as `more` nodes, which
+    /// the thread decoder already represents and which `/api/morechildren`
+    /// already fetches on demand.
+    ///
+    /// REDDIT-URL-002 sanctions both parameters on comment routes.
+    static let commentLimit = 100
+    static let commentDepth = 10
+
+    /// Builds the comment-route request.
+    ///
+    /// A permalink can arrive carrying its own parameters -- a share link into
+    /// one comment's context is the usual case. Those are preserved, and a
+    /// value it supplies for `sort`, `limit` or `depth` wins over the default,
+    /// because the link is more specific than the caller. Only `raw_json` is
+    /// imposed unconditionally: REDDIT-URL-002 requires it, and a link that
+    /// omitted it would otherwise get HTML-escaped bodies.
+    ///
+    /// Duplicates are dropped rather than appended. Reddit's behaviour when a
+    /// parameter appears twice is not defined anywhere we can rely on, and the
+    /// previous version could produce exactly that by concatenating its own
+    /// `sort` onto a permalink that already had one.
+    static func postRoute(
+        for permalink: URL,
+        sort: CommentSort
+    ) -> (path: String, query: [URLQueryItem]) {
+        let components = URLComponents(url: permalink, resolvingAgainstBaseURL: false)
         var path = components?.path ?? permalink.path
         if !path.hasSuffix(".json") { path += ".json" }
-        let query = components?.queryItems ?? []
-        components?.query = nil
-        return (path, query)
+
+        let inherited = (components?.queryItems ?? []).filter { $0.name != "raw_json" }
+        let inheritedNames = Set(inherited.map(\.name))
+        var query = [URLQueryItem(name: "raw_json", value: "1")]
+        if !inheritedNames.contains("sort") {
+            query.append(URLQueryItem(name: "sort", value: sort.rawValue))
+        }
+        if !inheritedNames.contains("limit") {
+            query.append(URLQueryItem(name: "limit", value: String(commentLimit)))
+        }
+        if !inheritedNames.contains("depth") {
+            query.append(URLQueryItem(name: "depth", value: String(commentDepth)))
+        }
+        return (path, query + inherited)
     }
 
     private func pathForURL(_ url: URL) -> String {
