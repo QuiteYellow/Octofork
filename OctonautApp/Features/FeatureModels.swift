@@ -345,6 +345,18 @@ struct CommunityCardModel: Identifiable, Hashable, Sendable {
     }
 }
 
+/// One letter's worth of subscribed communities, as the subscriptions list
+/// shows them and as the trailing A-Z index points at them.
+struct CommunityIndexSection: Identifiable, Hashable, Sendable {
+    /// "A" through "Z", or "#" for the names that do not begin with a letter.
+    /// Doubles as the section header and the index label, so the strip and the
+    /// headers cannot disagree.
+    let id: String
+    let communities: [CommunityCardModel]
+
+    var title: String { id }
+}
+
 actor SubscribedCommunitiesCache {
     static let shared = SubscribedCommunitiesCache()
 
@@ -978,13 +990,34 @@ final class OctonautFeatureStore {
             isSticky: true, isVideo: false, hasMedia: false, mediaTitle: "",
             shareURL: URL(string: "https://www.reddit.com/r/technology/comments/sample4")!),
     ]
-    var communities: [CommunityCardModel] = [
+    /// Sample rows, for previews. A live store empties these in `init`.
+    static let previewCommunities: [CommunityCardModel] = [
         CommunityCardModel(name: "apple", memberCount: 5_100_000, isSubscribed: true, isFavorite: true),
         CommunityCardModel(name: "swift", memberCount: 260_000, isSubscribed: true),
         CommunityCardModel(
             name: "iphone", memberCount: 4_300_000, isSubscribed: true, isFavorite: true),
         CommunityCardModel(name: "technology", memberCount: 16_000_000),
     ]
+
+    /// The subscribed communities, and the A-Z sections derived from them.
+    ///
+    /// The sections are kept rather than computed on demand: the
+    /// subscriptions list reads them on every body evaluation, and grouping
+    /// and sorting several hundred communities there would be work repeated
+    /// for every scroll and every unrelated state change. Writing through
+    /// this property is the one place they are rebuilt, so everything that
+    /// changes the list -- a refresh, a favourite toggled, an account
+    /// switched, a cached page applied -- updates both.
+    var communities: [CommunityCardModel] {
+        get { communitiesStorage }
+        set {
+            communitiesStorage = newValue
+            communitySections = OctonautFeatureStore.indexedSections(of: newValue)
+        }
+    }
+    private var communitiesStorage: [CommunityCardModel] = OctonautFeatureStore.previewCommunities
+    private(set) var communitySections: [CommunityIndexSection] =
+        OctonautFeatureStore.indexedSections(of: OctonautFeatureStore.previewCommunities)
     var inbox: [InboxCardModel] = [
         InboxCardModel(
             id: "inbox-1", kind: .reply, title: "Re: What small iOS detail makes your day better?",
@@ -1412,6 +1445,63 @@ final class OctonautFeatureStore {
             guard isCurrentAccount(selectedAccountID, generation: selectedGeneration) else { return }
             communitiesState = .failed(error.localizedDescription)
         }
+    }
+
+    /// Groups the subscription rows for the A-Z index.
+    ///
+    /// Favourites are left out: they have their own section above, and a
+    /// community listed there must not appear a second time under its letter.
+    /// Only letters that have a community get a section, so the index strip
+    /// never points at an empty one. `#` comes first, ahead of A.
+    static func indexedSections(of values: [CommunityCardModel]) -> [CommunityIndexSection] {
+        var buckets: [String: [CommunityCardModel]] = [:]
+        for community in values where !community.isFavorite {
+            buckets[indexSectionID(for: community.name), default: []].append(community)
+        }
+        return buckets
+            .map { id, members in
+                CommunityIndexSection(
+                    id: id,
+                    // Sorted on the same bare name the section was chosen
+                    // by. Sorting on the raw name instead put a prefixed
+                    // "r/analog" after "Apple" inside section A, ordered by a
+                    // prefix the grouping had already discarded.
+                    communities: members.sorted {
+                        bareName($0.name).localizedCaseInsensitiveCompare(bareName($1.name))
+                            == .orderedAscending
+                    })
+            }
+            .sorted { left, right in
+                // "#" collects everything that is not a letter and leads the
+                // alphabet, rather than sitting wherever "#" happens to fall
+                // in a string comparison.
+                if left.id == nonLetterSectionID { return true }
+                if right.id == nonLetterSectionID { return false }
+                return left.id.localizedCompare(right.id) == .orderedAscending
+            }
+    }
+
+    /// The single section that collects names not starting with a letter. It
+    /// sorts ahead of A.
+    static let nonLetterSectionID = "#"
+
+    /// The section a community belongs under: its first letter, upper-cased.
+    /// A digit, an underscore or an empty name goes to `#` -- between them
+    /// that is the rest of what Reddit allows in a community name.
+    static func indexSectionID(for name: String) -> String {
+        guard let first = bareName(name).first, first.isLetter else { return nonLetterSectionID }
+        return first.uppercased()
+    }
+
+    /// A community name without an `r/` prefix, which most of them do not
+    /// carry -- the row adds it when it draws -- but a name typed into a
+    /// custom feed or read from an older cache can.
+    static func bareName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["/r/", "r/"] where trimmed.lowercased().hasPrefix(prefix) {
+            return String(trimmed.dropFirst(prefix.count))
+        }
+        return trimmed
     }
 
     private func applyCommunities(_ values: [Community], favorites: Set<String>) {

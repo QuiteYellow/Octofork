@@ -743,15 +743,25 @@ struct OctonautCompactPostRow: View {
 struct OctonautCommunityRow: View {
     @Environment(\.octonautTheme) private var theme
     let community: CommunityCardModel
+    /// Follows the "Show community icons" setting. Off, the icon and its
+    /// placeholder circle are both gone and the name takes the space, rather
+    /// than every row keeping a reserved gutter for an icon nobody wants.
+    var showsIcon = true
     var onFavorite: (() -> Void)?
     var onSubscribe: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 10) {
-            OctonautCommunityIcon(url: community.iconURL, tint: theme.accent)
-            .frame(width: 34, height: 34)
+            if showsIcon {
+                OctonautCommunityIcon(url: community.iconURL, tint: theme.accent)
+                    .frame(width: 34, height: 34)
+            }
             VStack(alignment: .leading, spacing: 2) {
-                Text("r/\(community.name)")
+                // The prefix is scaffolding, the name is the thing being
+                // read, so they are not the same weight of ink. One Text, so
+                // truncation still counts the prefix and the row keeps its
+                // single-line rhythm.
+                Text("\(Text("r/").foregroundStyle(theme.secondaryText))\(community.name)")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(theme.primaryText)
                     .lineLimit(1)

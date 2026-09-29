@@ -70,7 +70,9 @@ struct SearchRootView: View {
                     }
                 case .loaded:
                     ForEach(model.trendingCommunities) { community in
-                        OctonautCommunityRow(community: community)
+                        OctonautCommunityRow(
+                            community: community,
+                            showsIcon: dependencies.settings.showCommunityIcons)
                             .contentShape(Rectangle())
                             .simultaneousGesture(
                                 TapGesture().onEnded {
@@ -180,7 +182,9 @@ struct SearchRootView: View {
                 }
             case .communities:
                 ForEach(model.communities) { community in
-                    OctonautCommunityRow(community: community)
+                    OctonautCommunityRow(
+                        community: community,
+                        showsIcon: dependencies.settings.showCommunityIcons)
                     .contentShape(Rectangle())
                     .simultaneousGesture(
                         TapGesture().onEnded {

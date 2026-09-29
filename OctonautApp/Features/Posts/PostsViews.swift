@@ -18,6 +18,34 @@ struct PostsRootView: View {
         return store.communities.filter { $0.name.localizedStandardContains(communityQuery) }
     }
 
+    private var favoriteCommunities: [CommunityCardModel] {
+        filteredCommunities.filter(\.isFavorite)
+    }
+
+    /// The star that leads the index strip and lands on Favorites -- only
+    /// while there is a favourite there for it to land on. Every other
+    /// non-letter section carries no label, so the strip reads star, #, A...
+    ///
+    /// A literal star rather than `star.fill`: `SectionIndexLabel` has an
+    /// image case, but neither public `sectionIndexLabel` overload can build
+    /// one -- both wrap their argument in `.text`, and the strip resolves that
+    /// to a string. An SF Symbol in a `Text` compiles and then draws an empty
+    /// slot in the index.
+    private var favoritesIndexLabel: Text? {
+        favoriteCommunities.isEmpty ? nil : Text(verbatim: "\u{2605}")
+    }
+
+    /// Whether the trailing A-Z strip takes part, and with it the per-letter
+    /// sections it points at.
+    ///
+    /// Only while the list is showing the whole subscription list: a search
+    /// shows flat results, because a reader who has typed three letters wants
+    /// the matches rather than the alphabet, and a collapsed Communities
+    /// section has no rows for the strip to scroll to.
+    private var showsCommunityIndex: Bool {
+        communityQuery.isEmpty && communitiesExpanded && !store.communitySections.isEmpty
+    }
+
     var body: some View {
         List {
             Section {
@@ -48,21 +76,21 @@ struct PostsRootView: View {
 
             Section {
                 if favoritesExpanded {
-                    let favorites = filteredCommunities.filter(\.isFavorite)
-                    if favorites.isEmpty {
+                    if favoriteCommunities.isEmpty {
                         Text(dependencies.accounts.selectedAccount == nil ? "Sign in to load account favorites." : "Tap a star beside a community to add it here.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .wideInterfaceEdgeToEdgeListSeparator(insets: EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                     } else {
-                        ForEach(favorites) { community in
+                        ForEach(favoriteCommunities) { community in
                             communityLink(community)
                         }
                     }
                 }
             } header: {
-                collapsibleHeader("Favorites", count: filteredCommunities.filter(\.isFavorite).count, systemImage: "star.fill", isExpanded: $favoritesExpanded)
+                collapsibleHeader("Favorites", count: favoriteCommunities.count, systemImage: "star.fill", isExpanded: $favoritesExpanded)
             }
+            .sectionIndexLabel(favoritesIndexLabel)
 
             Section {
                 if communitiesExpanded {
@@ -71,8 +99,26 @@ struct PostsRootView: View {
             } header: {
                 collapsibleHeader("Communities", count: filteredCommunities.filter { !$0.isFavorite }.count, systemImage: "person.3.fill", isExpanded: $communitiesExpanded)
             }
+
+            if showsCommunityIndex {
+                // Grouped in the store, so scrolling and unrelated state
+                // changes do not re-sort the whole subscription list.
+                ForEach(store.communitySections) { section in
+                    Section {
+                        ForEach(section.communities) { community in
+                            communityLink(community)
+                        }
+                    } header: {
+                        Text(section.title)
+                    }
+                    .sectionIndexLabel(section.title)
+                }
+            }
         }
         .listStyle(.plain)
+        // Feeds and the Communities header carry no index label, so the strip
+        // holds the favourites star and then the letters.
+        .listSectionIndexVisibility(showsCommunityIndex ? .visible : .hidden)
         .navigationTitle("Posts")
         .searchable(text: $communityQuery, placement: .navigationBarDrawer(displayMode: .always), prompt: "Find a community")
         .refreshable { await store.refreshCommunities(forceRefresh: true) }
@@ -136,7 +182,10 @@ struct PostsRootView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .wideInterfaceEdgeToEdgeListSeparator(insets: EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-            } else {
+            } else if !showsCommunityIndex {
+                // Searching, so the matches are one flat run with no letters
+                // between them. Otherwise the rows live in the indexed
+                // sections below this one.
                 ForEach(values) { community in
                     communityLink(community)
                 }
@@ -178,6 +227,7 @@ struct PostsRootView: View {
     private func communityLink(_ community: CommunityCardModel) -> some View {
         let row = OctonautCommunityRow(
             community: community,
+            showsIcon: dependencies.settings.showCommunityIcons,
             onFavorite: { store.toggleFavorite(communityID: community.id) },
             onSubscribe: { store.toggleSubscribe(communityID: community.id) }
         )
@@ -199,7 +249,12 @@ struct PostsRootView: View {
         // Keep the system disclosure indicator on the same trailing line as
         // the section controls while the row content still spans the width.
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))
-        .wideInterfaceEdgeToEdgeListSeparator(insets: EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))
+        // The row draws its own full-bleed divider, as every self-dividing row
+        // here does, so the system separator would be a second line under it --
+        // which is what the letter sections made visible. Hiding it also
+        // retires the edge-to-edge separator alignment this row used to ask
+        // for: there is no system separator left to align.
+        .listRowSeparator(.hidden)
     }
 
     @ViewBuilder
@@ -717,6 +772,7 @@ struct QuickCommunitySearchView: View {
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
     var onSelectFeed: ((FeedDescriptorModel) -> Void)? = nil
+    @Environment(AppDependencies.self) private var dependencies
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 
@@ -732,7 +788,9 @@ struct QuickCommunitySearchView: View {
                         router.push(.community(community.name))
                     }
                 } label: {
-                    OctonautCommunityRow(community: community)
+                    OctonautCommunityRow(
+                        community: community,
+                        showsIcon: dependencies.settings.showCommunityIcons)
                 }
                 .buttonStyle(.plain)
             }

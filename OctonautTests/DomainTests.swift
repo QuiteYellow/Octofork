@@ -726,6 +726,37 @@ final class DomainTests: XCTestCase {
     }
 
     @MainActor
+    func testCommunitySectionsGroupByLetterAndLeadWithNonLetters() {
+        let sections = OctonautFeatureStore.indexedSections(of: [
+            CommunityCardModel(name: "zsh"),
+            CommunityCardModel(name: "_private"),
+            CommunityCardModel(name: "Apple"),
+            CommunityCardModel(name: "r/analog"),
+            CommunityCardModel(name: "2007scape"),
+            CommunityCardModel(name: "swift"),
+        ])
+
+        XCTAssertEqual(sections.map(\.id), ["#", "A", "S", "Z"])
+        XCTAssertEqual(sections.first?.communities.map(\.name), ["_private", "2007scape"])
+        XCTAssertEqual(sections[1].communities.map(\.name), ["r/analog", "Apple"])
+    }
+
+    @MainActor
+    func testCommunitySectionsExcludeFavoritesAndFollowTheList() {
+        let store = OctonautFeatureStore()
+        store.communities = [
+            CommunityCardModel(name: "apple", isFavorite: true),
+            CommunityCardModel(name: "swift"),
+        ]
+
+        XCTAssertEqual(store.communitySections.map(\.id), ["S"])
+
+        store.toggleFavorite(communityID: "swift")
+
+        XCTAssertTrue(store.communitySections.isEmpty)
+    }
+
+    @MainActor
     func testSubscribedCommunitiesFinishCachingWhenViewTaskIsCancelled() async throws {
         let accountID = AccountID()
         await SubscribedCommunitiesCache.shared.remove(for: accountID)
