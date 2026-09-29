@@ -31,9 +31,16 @@ final class DomainTests: XCTestCase {
         post.isVideo = false
         post.mediaURL = URL(string: "https://i.redd.it/full.jpg")!
         post.thumbnailURL = URL(string: "https://preview.redd.it/thumb.jpg")!
-        XCTAssertEqual(GalleryMediaItem.items(from: [post]).first?.previewURL, post.mediaURL)
+        XCTAssertEqual(
+            GalleryMediaItem.items(from: [post]).first?.previewURL(scale: 3),
+            post.mediaURL,
+            "with no ladder published, a tile falls back to the full-size image"
+        )
         post.mediaKind = "video"
-        XCTAssertEqual(GalleryMediaItem.items(from: [post]).first?.previewURL, post.thumbnailURL)
+        XCTAssertEqual(
+            GalleryMediaItem.items(from: [post]).first?.previewURL(scale: 3),
+            post.thumbnailURL
+        )
         post.hasMedia = false
         XCTAssertTrue(GalleryMediaItem.items(from: [post]).isEmpty)
     }
@@ -1168,7 +1175,7 @@ final class DomainTests: XCTestCase {
         )
         let post = try XCTUnwrap(listing.items.first)
 
-        guard case .image(let decodedURL, _, _, _) = post.media else {
+        guard case .image(let decodedURL, _, _, _, _) = post.media else {
             return XCTFail("Expected image media")
         }
         XCTAssertEqual(decodedURL.absoluteString, imageURL)
@@ -1180,13 +1187,110 @@ final class DomainTests: XCTestCase {
         XCTAssertTrue(card.body.isEmpty)
     }
 
+    func testDirectImageURLKeepsTheSmallerCopiesRedditAlreadyMade() throws {
+        let data = Data(
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"ladder","name":"t3_ladder","permalink":"/r/pics/comments/ladder/post/","title":"A photo","subreddit":"pics","is_self":false,"url_overridden_by_dest":"https://i.redd.it/original.jpg","preview":{"images":[{"source":{"url":"https://preview.redd.it/original.jpg?width=4000","width":4000,"height":3000},"resolutions":[{"url":"https://preview.redd.it/original.jpg?width=108&amp;crop=smart","width":108,"height":81},{"url":"https://preview.redd.it/original.jpg?width=640&amp;crop=smart","width":640,"height":480},{"url":"https://preview.redd.it/original.jpg?width=1080&amp;crop=smart","width":1080,"height":810}]}]}}}]}}"#.utf8)
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        guard case .image(let decodedURL, _, _, _, let variants) = post.media else {
+            return XCTFail("Expected image media")
+        }
+
+        // The full-size image is unchanged: it is still what a save, a share
+        // and the viewer on Wi-Fi all reach for.
+        XCTAssertEqual(decodedURL.absoluteString, "https://i.redd.it/original.jpg")
+        XCTAssertEqual(variants.map(\.width), [108, 640, 1080])
+        // Escaped ampersands are decoded once, per REDDIT-MAP-003.
+        XCTAssertTrue(variants.allSatisfy { !$0.url.absoluteString.contains("&amp;") })
+    }
+
+    func testImageVariantSelectionPrefersTheSmallestCopyThatCovers() {
+        let variants = [108, 320, 640, 1080].map { width in
+            ImageVariant(
+                url: URL(string: "https://preview.redd.it/x.jpg?width=\(width)")!,
+                width: width,
+                height: width
+            )
+        }
+
+        XCTAssertEqual(variants.covering(200)?.width, 320)
+        XCTAssertEqual(variants.covering(640)?.width, 640)
+        // Nothing covers a full-bleed card on a 3x phone, so the top of the
+        // ladder is used rather than falling back to the original.
+        XCTAssertEqual(variants.covering(1_290)?.width, 1_080)
+        XCTAssertEqual(variants.largest?.width, 1_080)
+        XCTAssertNil([ImageVariant]().covering(200))
+    }
+
+    func testCardChoosesACopyForTheDisplayWidthAndKeepsTheOriginalForTheViewer() {
+        let original = URL(string: "https://i.redd.it/original.jpg")!
+        let variants = [108, 640, 1080].map { width in
+            ImageVariant(
+                url: URL(string: "https://preview.redd.it/x.jpg?width=\(width)")!,
+                width: width,
+                height: width
+            )
+        }
+        var card = PostCardModel.sample
+        card.hasMedia = true
+        card.mediaKind = "image"
+        card.mediaURL = original
+        card.galleryURLs = []
+        card.imageVariants = [variants]
+
+        // A 70-point thumbnail at 3x needs 210 pixels: the 640 rung, not 4000.
+        XCTAssertEqual(card.imageURL(displayWidth: 70, scale: 3)?.absoluteString.contains("width=640"), true)
+        // A full-bleed card exceeds the ladder, so it takes the top rung.
+        XCTAssertEqual(card.imageURL(displayWidth: 430, scale: 3)?.absoluteString.contains("width=1080"), true)
+
+        XCTAssertEqual(card.fullResolutionImageURL(), original)
+        XCTAssertEqual(card.viewerImageURL(isConnectedViaWiFi: true), original)
+        XCTAssertEqual(
+            card.viewerImageURL(isConnectedViaWiFi: false)?.absoluteString.contains("width=1080"),
+            true
+        )
+    }
+
+    func testCardWithoutAPublishedLadderKeepsUsingTheFullSizeImage() {
+        var card = PostCardModel.sample
+        card.hasMedia = true
+        card.mediaKind = "image"
+        card.mediaURL = URL(string: "https://i.redd.it/only.jpg")!
+        card.galleryURLs = []
+        card.imageVariants = []
+
+        XCTAssertEqual(card.imageURL(displayWidth: 70, scale: 3), card.mediaURL)
+        XCTAssertEqual(card.viewerImageURL(isConnectedViaWiFi: false), card.mediaURL)
+        XCTAssertNil(card.imageURL(page: 4, displayWidth: 70, scale: 3))
+    }
+
+    func testGalleryItemsKeepTheWholePreviewLadder() throws {
+        let data = Data(
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"gal","name":"t3_gal","permalink":"/r/pics/comments/gal/post/","title":"A gallery","subreddit":"pics","is_self":false,"is_gallery":true,"gallery_data":{"items":[{"media_id":"aaa"}]},"media_metadata":{"aaa":{"status":"valid","s":{"u":"https://preview.redd.it/aaa.jpg?width=4000","x":4000,"y":3000},"p":[{"u":"https://preview.redd.it/aaa.jpg?width=108","x":108,"y":81},{"u":"https://preview.redd.it/aaa.jpg?width=640","x":640,"y":480}]}}}}]}}"#.utf8)
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        guard case .gallery(let items) = post.media else {
+            return XCTFail("Expected gallery media")
+        }
+
+        XCTAssertEqual(items.first?.url.absoluteString, "https://preview.redd.it/aaa.jpg?width=4000")
+        XCTAssertEqual(items.first?.variants.map(\.width), [108, 640])
+
+        let card = PostCardModel(post: post)
+        XCTAssertEqual(card.imageVariants.first?.map(\.width), [108, 640])
+        XCTAssertEqual(
+            card.imageURL(displayWidth: 180, scale: 3)?.absoluteString.contains("width=640"),
+            true
+        )
+    }
+
     func testDirectImageURLDoesNotRequirePostHint() throws {
         let imageURL = "https://i.redd.it/no-hint.jpeg"
         let data = Data(
             #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"image-no-hint","name":"t3_image-no-hint","permalink":"/r/pics/comments/image-no-hint/post/","title":"Image without a hint","subreddit":"pics","is_self":false,"url_overridden_by_dest":"\#(imageURL)"}}]}}"#.utf8)
 
         let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
-        guard case .image(let decodedURL, _, _, _) = post.media else {
+        guard case .image(let decodedURL, _, _, _, _) = post.media else {
             return XCTFail("Expected a direct image URL to become native image media")
         }
         XCTAssertEqual(decodedURL.absoluteString, imageURL)
@@ -1197,7 +1301,7 @@ final class DomainTests: XCTestCase {
             #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"crosspost-image","name":"t3_crosspost-image","permalink":"/r/yeoreum/comments/crosspost-image/update/","title":"Instagram update","subreddit":"yeoreum","is_self":false,"url":"https://www.reddit.com/r/elsewhere/comments/source/update/","crosspost_parent_list":[{"post_hint":"image","url_overridden_by_dest":"https://i.redd.it/source-image.jpg","preview":{"images":[{"source":{"url":"https://preview.redd.it/source-image.jpg?width=1080&amp;format=pjpg","width":1080,"height":1350}}]}}]}}]}}"#.utf8)
 
         let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
-        guard case .image(let imageURL, let thumbnailURL, _, _) = post.media else {
+        guard case .image(let imageURL, let thumbnailURL, _, _, _) = post.media else {
             return XCTFail("Expected the crosspost parent image to become native media")
         }
         XCTAssertEqual(imageURL.absoluteString, "https://i.redd.it/source-image.jpg")

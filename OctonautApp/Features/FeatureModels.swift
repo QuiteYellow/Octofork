@@ -4,7 +4,7 @@ import Observation
 extension PostMedia {
     fileprivate var thumbnailURL: URL? {
         switch self {
-        case .image(_, let thumbnail, _, _): return thumbnail
+        case .image(_, let thumbnail, _, _, _): return thumbnail
         case .video(_, _, let thumbnail, _, _, _): return thumbnail
         case .gallery(let items): return items.first?.thumbnailURL
         case .link(_, let metadata): return metadata?.imageURL
@@ -16,6 +16,16 @@ extension PostMedia {
         if case .gallery(let items) = self { return items.map(\.url) }
         if let primaryURL { return [primaryURL] }
         return []
+    }
+
+    /// Reddit's smaller copies, one list per entry of `galleryURLs` and in the
+    /// same order, so a page index addresses both.
+    fileprivate var imageVariants: [[ImageVariant]] {
+        switch self {
+        case .gallery(let items): return items.map(\.variants)
+        case .image(_, _, _, _, let variants): return [variants]
+        case .none, .video, .link, .poll, .unsupported: return []
+        }
     }
 
     fileprivate var audioURL: URL? {
@@ -69,6 +79,13 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
     var audioURL: URL?
     /// Reddit's own dimensions for the video, when it publishes them.
     var mediaAspectRatio: CGFloat?
+    /// Reddit's smaller copies of each image, parallel to `galleryURLs`.
+    ///
+    /// `galleryURLs` stays what it always was -- the full-size images, which
+    /// is what the viewer, a save and a share all want. These are what the
+    /// feed and the gallery grid should be drawing from instead, and are
+    /// empty for a post Reddit published no ladder for.
+    var imageVariants: [[ImageVariant]] = []
 
 #if DEBUG
     static let screenshotCat = PostCardModel(
@@ -115,6 +132,49 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         (isNSFW && blurringNSFW) || (isSpoiler && blurringSpoilers)
     }
 
+    /// Reddit's full-size image for one page of this post.
+    ///
+    /// What a save, a share and the media viewer on an unmetered connection
+    /// all want. A post with a single image is page zero of a gallery of one.
+    func fullResolutionImageURL(page: Int = 0) -> URL? {
+        if galleryURLs.indices.contains(page) { return galleryURLs[page] }
+        return page == 0 ? mediaURL : nil
+    }
+
+    /// The image to fetch when it is about to be drawn `points` wide.
+    ///
+    /// This is REDDIT-MAP-003's "preview resolution close to display pixels,
+    /// accounting for scale". A feed card, a compact row's thumbnail and a
+    /// gallery tile are three very different sizes, and all three were
+    /// fetching the same full-size file.
+    ///
+    /// Falls back to the full-size URL when Reddit published no ladder for
+    /// this image, which is the old behaviour and still correct.
+    func imageURL(page: Int = 0, displayWidth points: CGFloat, scale: CGFloat) -> URL? {
+        guard let fullResolution = fullResolutionImageURL(page: page) else { return nil }
+        guard imageVariants.indices.contains(page) else { return fullResolution }
+        let pixels = Int((points * max(scale, 1)).rounded(.up))
+        return imageVariants[page].covering(pixels)?.url ?? fullResolution
+    }
+
+    /// The image the full-screen viewer should fetch.
+    ///
+    /// Full resolution on Wi-Fi: opening the viewer is a deliberate act, the
+    /// image can be zoomed into, and an unmetered connection is not the place
+    /// to be stingy about it.
+    ///
+    /// On a metered connection Reddit's largest pre-made copy is used instead.
+    /// It is around 1080 pixels wide, which still exceeds what the screen can
+    /// show unzoomed, and it avoids spending someone's data allowance on an
+    /// uploader's untouched original.
+    func viewerImageURL(page: Int = 0, isConnectedViaWiFi: Bool) -> URL? {
+        guard let fullResolution = fullResolutionImageURL(page: page) else { return nil }
+        guard !isConnectedViaWiFi, imageVariants.indices.contains(page) else {
+            return fullResolution
+        }
+        return imageVariants[page].largest?.url ?? fullResolution
+    }
+
     var fullname: String { IDNormalization.fullname(id, kind: "t3") }
     var prefersMediaFirstPresentation: Bool {
         let mediaLedKinds = ["image", "gallery", "video", "gif", "embeddedVideo"]
@@ -151,7 +211,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         mediaKind: String = "none",
         galleryURLs: [URL] = [],
         audioURL: URL? = nil,
-        mediaAspectRatio: CGFloat? = nil
+        mediaAspectRatio: CGFloat? = nil,
+        imageVariants: [[ImageVariant]] = []
     ) {
         self.id = id
         self.community = community
@@ -178,6 +239,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         self.galleryURLs = galleryURLs
         self.audioURL = audioURL
         self.mediaAspectRatio = mediaAspectRatio
+        self.imageVariants = imageVariants
     }
 
     init(post: Post) {
@@ -206,7 +268,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
             mediaKind: post.media.kind,
             galleryURLs: post.media.galleryURLs,
             audioURL: post.media.audioURL,
-            mediaAspectRatio: post.media.aspectRatio
+            mediaAspectRatio: post.media.aspectRatio,
+            imageVariants: post.media.imageVariants
         )
     }
 
