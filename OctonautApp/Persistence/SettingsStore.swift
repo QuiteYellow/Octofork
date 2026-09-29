@@ -184,6 +184,10 @@ final class SettingsStore {
         }
     }
     var showPostFlair: Bool { didSet { persist(showPostFlair, key: Keys.showPostFlair) } }
+    /// Collapses the AutoModerator comment at the top of a thread on
+    /// arrival. Off by default: the rule is a guess about what the reader
+    /// wants to skip, and a wrong guess hides a sub's actual rules.
+    var collapseAutoModeratorComments: Bool { didSet { persist(collapseAutoModeratorComments, key: Keys.collapseAutoModeratorComments) } }
     var blurSpoilers: Bool { didSet { persist(blurSpoilers, key: Keys.blurSpoilers) } }
     var blurNSFWMedia: Bool { didSet { persist(blurNSFWMedia, key: Keys.blurNSFWMedia) } }
     var showPostSummaries: Bool { didSet { persist(showPostSummaries, key: Keys.showPostSummaries) } }
@@ -382,6 +386,7 @@ final class SettingsStore {
         selfTextPreviewLines = defaults.object(forKey: Keys.selfTextPreviewLines) as? Int ?? 3
         linkDescriptionLines = defaults.object(forKey: Keys.linkDescriptionLines) as? Int ?? 10
         showPostFlair = defaults.object(forKey: Keys.showPostFlair) as? Bool ?? true
+        collapseAutoModeratorComments = defaults.object(forKey: Keys.collapseAutoModeratorComments) as? Bool ?? false
         blurSpoilers = defaults.object(forKey: Keys.blurSpoilers) as? Bool ?? true
         blurNSFWMedia = defaults.object(forKey: Keys.blurNSFWMedia) as? Bool ?? true
         showPostSummaries = defaults.object(forKey: Keys.showPostSummaries) as? Bool ?? false
@@ -443,6 +448,7 @@ final class SettingsStore {
         selfTextPreviewLines = fresh.selfTextPreviewLines
         linkDescriptionLines = fresh.linkDescriptionLines
         showPostFlair = fresh.showPostFlair
+        collapseAutoModeratorComments = fresh.collapseAutoModeratorComments
         blurSpoilers = fresh.blurSpoilers
         blurNSFWMedia = fresh.blurNSFWMedia
         showPostSummaries = fresh.showPostSummaries
@@ -536,6 +542,7 @@ final class SettingsStore {
         static let selfTextPreviewLines = "appearance.selfTextPreviewLines"
         static let linkDescriptionLines = "appearance.linkDescriptionLines"
         static let showPostFlair = "appearance.showPostFlair"
+        static let collapseAutoModeratorComments = "comments.collapseAutoModerator"
         static let blurSpoilers = "appearance.blurSpoilers"
         static let blurNSFWMedia = "appearance.blurNSFWMedia"
         static let showPostSummaries = "appearance.showPostSummaries"

@@ -761,6 +761,90 @@ final class DomainTests: XCTestCase {
         )
     }
 
+    /// A thread whose top comment is AutoModerator's, with one reply, plus an
+    /// ordinary top-level comment and a nested AutoModerator reply.
+    private static func autoModeratorThreadJSON() -> Data {
+        Data(
+            #"""
+            [{"kind":"Listing","data":{"children":[{"kind":"t3","data":{"id":"abc","name":"t3_abc","title":"A thread","author":"someone","subreddit":"swift","permalink":"/r/swift/comments/abc/a_thread/","created_utc":1700000000}}]}},
+             {"kind":"Listing","data":{"children":[
+               {"kind":"t1","data":{"id":"c1","name":"t1_c1","author":"AutoModerator","body":"Please read the rules.","created_utc":1700000001,"ups":1,"distinguished":"moderator","replies":{"kind":"Listing","data":{"children":[
+                 {"kind":"t1","data":{"id":"c1a","name":"t1_c1a","author":"reader","body":"Thanks.","created_utc":1700000002,"ups":2,"replies":""}}]}}}},
+               {"kind":"t1","data":{"id":"c2","name":"t1_c2","author":"someone_else","body":"An ordinary comment.","created_utc":1700000003,"ups":5,"replies":{"kind":"Listing","data":{"children":[
+                 {"kind":"t1","data":{"id":"c2a","name":"t1_c2a","author":"AutoModerator","body":"A nested bot reply.","created_utc":1700000004,"ups":1,"replies":""}}]}}}}
+             ]}}]
+            """#.utf8)
+    }
+
+    @MainActor
+    private func makeThreadStore(collapseAutoModerator: Bool) -> OctonautFeatureStore {
+        let defaults = UserDefaults(suiteName: "automod-\(UUID().uuidString)")!
+        let settings = SettingsStore(defaults: defaults)
+        settings.collapseAutoModeratorComments = collapseAutoModerator
+        let client = FixtureRedditClient(postData: Self.autoModeratorThreadJSON())
+        return OctonautFeatureStore(reddit: client, accountID: AccountID(), settings: settings)
+    }
+
+    @MainActor
+    func testAutoModeratorCommentArrivesExpandedByDefault() async {
+        let store = makeThreadStore(collapseAutoModerator: false)
+
+        _ = await store.loadPostDetail(for: .sample)
+
+        XCTAssertEqual(store.comments.first?.author, "AutoModerator")
+        XCTAssertEqual(store.comments.first?.isCollapsed, false)
+    }
+
+    @MainActor
+    func testAutoModeratorCommentArrivesCollapsedWhenAskedFor() async {
+        let store = makeThreadStore(collapseAutoModerator: true)
+
+        _ = await store.loadPostDetail(for: .sample)
+
+        let top = store.comments.first
+        XCTAssertEqual(top?.author, "AutoModerator")
+        XCTAssertEqual(top?.isCollapsed, true)
+        // The rule collapses the bot's own comment, not the conversation under
+        // it: a reply the reader expands to is still there.
+        XCTAssertEqual(top?.children.first?.isCollapsed, false)
+    }
+
+    @MainActor
+    func testOnlyTopLevelAutoModeratorCollapses() async {
+        let store = makeThreadStore(collapseAutoModerator: true)
+
+        _ = await store.loadPostDetail(for: .sample)
+
+        let ordinary = store.comments.dropFirst().first
+        XCTAssertEqual(ordinary?.author, "someone_else")
+        XCTAssertEqual(ordinary?.isCollapsed, false)
+        // Nested AutoModerator replies are ordinary comments; only the pinned
+        // one at the top of the thread is the thing being skipped.
+        XCTAssertEqual(ordinary?.children.first?.author, "AutoModerator")
+        XCTAssertEqual(ordinary?.children.first?.isCollapsed, false)
+    }
+
+    @MainActor
+    func testTurningCollapseOffReopensACachedThreadExpanded() async {
+        let defaults = UserDefaults(suiteName: "automod-\(UUID().uuidString)")!
+        let settings = SettingsStore(defaults: defaults)
+        settings.collapseAutoModeratorComments = true
+        let client = FixtureRedditClient(postData: Self.autoModeratorThreadJSON())
+        let store = OctonautFeatureStore(reddit: client, accountID: AccountID(), settings: settings)
+
+        _ = await store.loadPostDetail(for: .sample)
+        XCTAssertEqual(store.comments.first?.isCollapsed, true)
+
+        // The cached thread was built under the old setting, so serving it
+        // back unchanged would show a collapsed comment to a reader who has
+        // just turned collapsing off.
+        settings.collapseAutoModeratorComments = false
+        _ = await store.loadPostDetail(for: .sample)
+
+        XCTAssertEqual(store.comments.first?.author, "AutoModerator")
+        XCTAssertEqual(store.comments.first?.isCollapsed, false)
+    }
+
     @MainActor
     func testSubscribedCommunitiesLoadAndRestoreAccountFavorites() async throws {
         let accountID = AccountID()

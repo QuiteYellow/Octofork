@@ -968,6 +968,14 @@ final class OctonautFeatureStore {
         let post: PostCardModel
         let comments: [CommentCardModel]
         let storedAt: Date
+        /// The setting the comments were built under.
+        ///
+        /// Collapsing is decided once, while the tree is built, so a cached
+        /// thread carries whatever the setting said at the time. Without this
+        /// stamp, turning the setting off and reopening a thread read from the
+        /// cache served it still collapsed -- the same trap the feed cache's
+        /// `filterRevision` exists to close.
+        let collapsedAutoModerator: Bool
     }
 
     /// A feed's rows depend on the selected sort as much as on the feed
@@ -1756,6 +1764,7 @@ final class OctonautFeatureStore {
         let key = DetailCacheKey(postID: post.id, sort: sort.lowercased(), accountID: accountID)
         saveVisibleDetail()
         if !forceRefresh, let cached = detailCache[key],
+           cached.collapsedAutoModerator == collapsesAutoModeratorComments,
            Date.now.timeIntervalSince(cached.storedAt) < detailCacheFreshness {
             detailRequestID = UUID()
             detailPost = cached.post
@@ -1797,7 +1806,9 @@ final class OctonautFeatureStore {
             detailPost = PostCardModel(post: thread.post)
             comments = thread.comments.map { node in
                 switch node {
-                case .comment(let comment): return CommentCardModel(comment: comment)
+                case .comment(let comment):
+                    return CommentCardModel(
+                        comment: comment, isCollapsed: collapsesOnArrival(comment, depth: 0))
                 case .more(let more): return CommentCardModel.more(more, depth: 0)
                 case .deleted(let deleted): return CommentCardModel.deleted(deleted, depth: 0)
                 }
@@ -1805,7 +1816,9 @@ final class OctonautFeatureStore {
             moreFailedIDs.removeAll()
             detailState = .loaded
             visibleDetailKey = key
-            detailCache[key] = DetailCacheEntry(post: detailPost ?? post, comments: comments, storedAt: .now)
+            detailCache[key] = DetailCacheEntry(
+                post: detailPost ?? post, comments: comments, storedAt: .now,
+                collapsedAutoModerator: collapsesAutoModeratorComments)
             trimDetailCache()
             return true
         } catch is CancellationError {
@@ -1858,7 +1871,9 @@ final class OctonautFeatureStore {
             var replacements = nodes.map { node -> CommentCardModel in
                 switch node {
                 case .comment(let comment):
-                    return CommentCardModel(comment: comment, depth: placeholder.depth)
+                    return CommentCardModel(
+                        comment: comment, depth: placeholder.depth,
+                        isCollapsed: collapsesOnArrival(comment, depth: placeholder.depth))
                 case .more(let more):
                     return CommentCardModel.more(more, depth: placeholder.depth)
                 case .deleted(let deleted):
@@ -1907,7 +1922,9 @@ final class OctonautFeatureStore {
         guard let key = visibleDetailKey, let detailPost,
               let existing = detailCache[key],
               Date.now.timeIntervalSince(existing.storedAt) < detailCacheFreshness else { return }
-        detailCache[key] = DetailCacheEntry(post: detailPost, comments: comments, storedAt: existing.storedAt)
+        detailCache[key] = DetailCacheEntry(
+            post: detailPost, comments: comments, storedAt: existing.storedAt,
+            collapsedAutoModerator: existing.collapsedAutoModerator)
     }
 
     private func trimDetailCache() {
@@ -2518,6 +2535,31 @@ final class OctonautFeatureStore {
     func recordFeedScroll(points: Int) async {
         guard points > 0, settings?.collectLocalUsageStatistics != false, let persistence else { return }
         try? await persistence.incrementStatistic(.feedScrollPoints, by: points)
+    }
+
+    /// Whether the reader has asked for the AutoModerator comment to arrive
+    /// collapsed. Read once per tree rather than per comment.
+    private var collapsesAutoModeratorComments: Bool {
+        settings?.collapseAutoModeratorComments ?? false
+    }
+
+    /// Whether this comment should arrive collapsed.
+    ///
+    /// Top-level only, and matched on the author name -- which is what both
+    /// references do (Hydra in `formatComments`, Winston in the comment row's
+    /// `onAppear`). Reddit's own bot posts under exactly "AutoModerator"; the
+    /// comparison is case-insensitive because nothing is gained by being
+    /// strict about a name the reader never types.
+    ///
+    /// Decided here, where the tree is built, rather than when a row appears.
+    /// A row-level rule has to remember whether it has already run, or it
+    /// collapses the comment again every time the reader expands it and
+    /// scrolls away -- which is why Winston needs its `commentViewLoaded`
+    /// guard. Deciding once removes the state instead of guarding it.
+    private func collapsesOnArrival(_ comment: CommentNode, depth: Int) -> Bool {
+        guard collapsesAutoModeratorComments, depth == 0 else { return false }
+        guard let author = comment.author?.username else { return false }
+        return author.caseInsensitiveCompare("AutoModerator") == .orderedSame
     }
 
     func toggleFavorite(communityID: String) {
