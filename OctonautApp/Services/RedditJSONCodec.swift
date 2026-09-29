@@ -566,11 +566,18 @@ enum RedditJSONCodec {
                 ?? (index == 0 ? targetURL : nil)
 
             if let candidateURL, isDirectImageURL(candidateURL) {
+                // The preview ladder describes this same image, so it comes
+                // along even though the URL did not come from `preview`.
+                // Without this the most common image post in the feed -- a
+                // direct i.redd.it upload -- would still have nothing to
+                // offer but the uploader's original file.
+                let dimensions = previewImageDimensions(candidate)
                 return .image(
                     url: candidateURL,
                     thumbnailURL: thumbnail(candidate),
-                    width: nil,
-                    height: nil
+                    width: dimensions?.width,
+                    height: dimensions?.height,
+                    variants: previewVariants(candidate)
                 )
             }
         }
@@ -588,7 +595,8 @@ enum RedditJSONCodec {
                     url: previewURL,
                     thumbnailURL: thumbnail(candidate),
                     width: dimensions?.width,
-                    height: dimensions?.height
+                    height: dimensions?.height,
+                    variants: previewVariants(candidate)
                 )
             }
         }
@@ -726,6 +734,31 @@ enum RedditJSONCodec {
         return (int(source["width"]), int(source["height"]))
     }
 
+    /// Reddit's pre-generated smaller copies of a post's preview image.
+    ///
+    /// These sit in `preview.images[].resolutions` next to the `source` the
+    /// decoder has always read, and were being discarded. REDDIT-MAP-003 wants
+    /// the one closest to the display size; without the ladder there is
+    /// nothing to choose from but the original.
+    ///
+    /// An entry missing either dimension is dropped rather than guessed at: a
+    /// variant whose width is unknown cannot be compared against a display
+    /// width, which is the only thing they are for.
+    private static func previewVariants(_ object: [String: RedditJSONValue]) -> [ImageVariant] {
+        let resolutions = object["preview"]?.objectValue?["images"]?.arrayValue?.first?
+            .objectValue?["resolutions"]?.arrayValue ?? []
+        return resolutions.compactMap { value in
+            guard let entry = value.objectValue,
+                  let variantURL = url(entry["url"]?.stringValue),
+                  let width = int(entry["width"]),
+                  let height = int(entry["height"]),
+                  width > 0, height > 0 else {
+                return nil
+            }
+            return ImageVariant(url: variantURL, width: width, height: height)
+        }
+    }
+
     private static func oEmbed(
         _ object: [String: RedditJSONValue]
     ) -> [String: RedditJSONValue]? {
@@ -830,13 +863,28 @@ enum RedditJSONCodec {
                 return nil
             }
 
+            // The same ladder the whole of `p` describes, kept rather than
+            // reduced to its first and last rung. A gallery tile is drawn a
+            // few hundred points wide and had been fetching `s` -- the
+            // original -- for every entry on screen.
+            let variants: [ImageVariant] = previews.compactMap { preview in
+                guard let previewVariantURL = url(preview["u"]?.stringValue),
+                      let width = int(preview["x"]),
+                      let height = int(preview["y"]),
+                      width > 0, height > 0 else {
+                    return nil
+                }
+                return ImageVariant(url: previewVariantURL, width: width, height: height)
+            }
+
             return GalleryItem(
                 id: mediaID,
                 url: sourceURL,
                 thumbnailURL: previewURL,
                 width: int(source?["x"]) ?? int(largestPreview?["x"]),
                 height: int(source?["y"]) ?? int(largestPreview?["y"]),
-                caption: galleryItem["caption"]?.stringValue
+                caption: galleryItem["caption"]?.stringValue,
+                variants: variants
             )
         }
     }

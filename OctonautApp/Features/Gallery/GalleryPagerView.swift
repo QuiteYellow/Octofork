@@ -7,7 +7,21 @@ struct GalleryMediaItem: Identifiable {
 
     var id: String { "\(post.id):\(page)" }
     var isVideo: Bool { post.isVideo || ["video", "gif", "embeddedVideo"].contains(post.mediaKind) }
-    var previewURL: URL? { isVideo ? post.thumbnailURL : url }
+
+    /// The copy to draw in a grid tile.
+    ///
+    /// This was `url` -- Reddit's full-size image -- so a screenful of tiles
+    /// fetched a screenful of uploaders' originals to draw each one a couple
+    /// of hundred points wide. `url` itself is untouched, and is still what
+    /// opening the tile hands to the viewer.
+    func previewURL(scale: CGFloat) -> URL? {
+        guard !isVideo else { return post.thumbnailURL }
+        return post.imageURL(
+            page: page,
+            displayWidth: OctonautImageDisplayWidth.galleryTile,
+            scale: scale
+        ) ?? url
+    }
 
     static func items(from posts: [PostCardModel]) -> [Self] {
         posts.filter(\.hasMedia).flatMap { post in
@@ -23,8 +37,11 @@ struct GalleryMediaTile: View {
     var blursNSFW = true
     var blursSpoilers = true
     let onOpen: () -> Void
+    @Environment(\.displayScale) private var displayScale
     @State private var image: UIImage?
     @State private var failed = false
+
+    private var previewURL: URL? { item.previewURL(scale: displayScale) }
 
     private var isBlurred: Bool {
         item.post.isSensitive(blurringNSFW: blursNSFW, blurringSpoilers: blursSpoilers)
@@ -45,7 +62,7 @@ struct GalleryMediaTile: View {
                             .resizable()
                             .scaledToFit()
                             .blur(radius: isBlurred ? 24 : 0)
-                    } else if failed || item.previewURL == nil {
+                    } else if failed || previewURL == nil {
                         Image(systemName: item.isVideo ? "play.rectangle" : "photo.slash")
                             .font(.title2).foregroundStyle(.secondary)
                     } else {
@@ -68,10 +85,10 @@ struct GalleryMediaTile: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(item.post.isSensitive ? "Sensitive media. " : "")\(item.post.title), image \(item.page + 1) of \(max(1, item.post.galleryURLs.count))")
         .accessibilityHint("Opens the full screen media viewer")
-        .task(id: item.previewURL) {
+        .task(id: previewURL) {
             image = nil
             failed = false
-            guard let url = item.previewURL else { return }
+            guard let url = previewURL else { return }
             do {
                 let result = try await OctonautImageCache.image(for: url)
                 guard !Task.isCancelled else { return }

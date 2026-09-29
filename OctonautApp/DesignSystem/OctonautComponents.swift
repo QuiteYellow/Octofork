@@ -424,6 +424,7 @@ private extension View {
 
 struct OctonautCompactPostRow: View {
     @Environment(\.octonautTheme) private var theme
+    @Environment(\.displayScale) private var displayScale
     let post: PostCardModel
     var thumbnailOnRight = false
     var showsFlair = true
@@ -570,10 +571,17 @@ struct OctonautCompactPostRow: View {
         .accessibilityHidden(true)
     }
 
+    /// Reddit's own `thumbnail` is already tiny, so it wins when it exists.
+    /// When it does not, a 70-point tile used to fall through to the
+    /// full-size image; it now takes the smallest copy that covers the tile.
     private var previewURL: URL? {
         if let thumbnailURL = post.thumbnailURL { return thumbnailURL }
-        if let galleryURL = post.galleryURLs.first { return galleryURL }
-        if post.mediaKind == "image" || post.mediaKind == "gif" { return post.mediaURL }
+        if post.galleryURLs.first != nil || post.mediaKind == "image" || post.mediaKind == "gif" {
+            return post.imageURL(
+                displayWidth: OctonautImageDisplayWidth.compactThumbnail,
+                scale: displayScale
+            )
+        }
         return nil
     }
 }

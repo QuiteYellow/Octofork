@@ -192,6 +192,49 @@ enum VoteState: String, Codable, Hashable, Sendable {
     }
 }
 
+/// One of the copies Reddit has already made of an image.
+///
+/// Reddit publishes a ladder of these beside every preview -- roughly 108,
+/// 216, 320, 640, 960 and 1080 pixels wide -- and beside every gallery entry.
+/// They exist on Reddit's CDN whether or not anyone asks for them, so using
+/// one costs nothing that fetching the original does not cost more of.
+struct ImageVariant: Codable, Hashable, Sendable {
+    let url: URL
+    let width: Int
+    let height: Int
+}
+
+extension Array where Element == ImageVariant {
+    /// The copy to fetch for an image that will be drawn `pixels` wide.
+    ///
+    /// REDDIT-MAP-003 asks for "a preview resolution close to display pixels,
+    /// accounting for scale". Close, and deliberately not "at least": Reddit's
+    /// ladder stops near 1080 pixels, which is narrower than a current phone's
+    /// full-bleed width once the display scale is applied. A strict
+    /// at-least-this-wide rule would therefore match nothing on the one image
+    /// that matters most -- the feed's own -- and fall back to the uploader's
+    /// original, which is the behaviour this exists to replace.
+    ///
+    /// So the top of the ladder is used when nothing covers the request. A
+    /// photograph drawn from a 1080-pixel copy into 1206 device pixels is not
+    /// tellable apart at arm's length, and the original behind it is routinely
+    /// several megabytes.
+    ///
+    /// Returns nil only when Reddit published no ladder at all, which leaves
+    /// the caller holding its own full-size URL.
+    func covering(_ pixels: Int) -> ImageVariant? {
+        guard !isEmpty else { return nil }
+        let ascending = sorted { $0.width < $1.width }
+        return ascending.first { $0.width >= pixels } ?? ascending.last
+    }
+
+    /// The largest copy Reddit made, for when the original is too expensive
+    /// to be worth its extra detail.
+    var largest: ImageVariant? {
+        self.max { $0.width < $1.width }
+    }
+}
+
 struct GalleryItem: Codable, Hashable, Sendable, Identifiable {
     let id: String
     let url: URL
@@ -199,6 +242,8 @@ struct GalleryItem: Codable, Hashable, Sendable, Identifiable {
     var width: Int?
     var height: Int?
     var caption: String?
+    /// Reddit's smaller copies of this entry, if it published any.
+    var variants: [ImageVariant] = []
 }
 
 struct Poll: Codable, Hashable, Sendable, Identifiable {
@@ -232,7 +277,10 @@ struct LinkMetadata: Codable, Hashable, Sendable {
 
 enum PostMedia: Codable, Hashable, Sendable {
     case none
-    case image(url: URL, thumbnailURL: URL?, width: Int?, height: Int?)
+    /// `url` is always Reddit's full-size image. `variants` are its smaller
+    /// copies, which is what anything drawing the image at a known size
+    /// should be choosing from.
+    case image(url: URL, thumbnailURL: URL?, width: Int?, height: Int?, variants: [ImageVariant] = [])
     case gallery(items: [GalleryItem])
     case video(url: URL, audioURL: URL?, thumbnailURL: URL?, isGIF: Bool)
     case link(url: URL, metadata: LinkMetadata?)
@@ -255,7 +303,7 @@ enum PostMedia: Codable, Hashable, Sendable {
     var primaryURL: URL? {
         switch self {
         case .none, .poll: return nil
-        case .image(let url, _, _, _), .video(let url, _, _, _), .link(let url, _): return url
+        case .image(let url, _, _, _, _), .video(let url, _, _, _), .link(let url, _): return url
         case .gallery(let items): return items.first?.url
         case .unsupported(let permalink, _): return permalink
         }

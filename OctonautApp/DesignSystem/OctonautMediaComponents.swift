@@ -541,19 +541,36 @@ final class OctonautFeedMediaPreloader {
         }
     }
 
+    /// The URLs a row will ask for, chosen the same way the row chooses them.
+    ///
+    /// These have to match exactly. A prefetch of a different copy of the same
+    /// image is not a warm cache, it is the image fetched twice -- so every
+    /// size decision here mirrors one in `OctonautCompactPostRow` or
+    /// `OctonautInlineMediaView`, through the shared widths.
     private func imageURLs(for post: PostCardModel, compact: Bool) -> [URL] {
+        let scale = OctonautImageDisplayWidth.currentScale
         if compact {
             if let thumbnailURL = post.thumbnailURL { return [thumbnailURL] }
-            if let galleryURL = post.galleryURLs.first { return [galleryURL] }
-            if post.mediaKind == "image", let mediaURL = post.mediaURL { return [mediaURL] }
-            return []
+            guard post.galleryURLs.first != nil || post.mediaKind == "image" else { return [] }
+            return [
+                post.imageURL(
+                    displayWidth: OctonautImageDisplayWidth.compactThumbnail,
+                    scale: scale
+                )
+            ].compactMap { $0 }
         }
 
         switch post.mediaKind {
         case "gallery":
-            return Array(post.galleryURLs.prefix(2))
+            // Two are on screen at a time in the inline strip.
+            let pageWidth = OctonautImageDisplayWidth.inlinePage(count: post.galleryURLs.count)
+            return (0..<min(2, post.galleryURLs.count)).compactMap { page in
+                post.imageURL(page: page, displayWidth: pageWidth, scale: scale)
+            }
         case "image":
-            return post.mediaURL.map { [$0] } ?? []
+            return [
+                post.imageURL(displayWidth: OctonautImageDisplayWidth.card, scale: scale)
+            ].compactMap { $0 }
         case "video", "gif", "embeddedVideo", "link":
             return post.thumbnailURL.map { [$0] } ?? []
         default:
@@ -650,6 +667,7 @@ struct OctonautMuxWarningBadge: View {
 
 struct OctonautInlineMediaView: View {
     @Environment(AppDependencies.self) private var dependencies
+    @Environment(\.displayScale) private var displayScale
     let post: PostCardModel
     var onOpen: ((Int) -> Void)?
     var preloader: OctonautFeedMediaPreloader?
@@ -731,9 +749,18 @@ struct OctonautInlineMediaView: View {
 
                     ScrollView(.horizontal) {
                         LazyHStack(spacing: gallerySpacing) {
-                            ForEach(Array(inlineGalleryURLs.enumerated()), id: \.offset) { index, url in
+                            ForEach(Array(inlineGalleryURLs.enumerated()), id: \.offset) { index, _ in
                                 Button { openOrReveal(at: index) } label: {
-                                    OctonautAsyncImage(url: url, contentMode: .fill)
+                                    OctonautAsyncImage(
+                                        url: post.imageURL(
+                                            page: index,
+                                            displayWidth: OctonautImageDisplayWidth.inlinePage(
+                                                count: inlineGalleryURLs.count
+                                            ),
+                                            scale: displayScale
+                                        ),
+                                        contentMode: .fill
+                                    )
                                         .frame(width: itemWidth, height: galleryHeight)
                                         .clipped()
                                         .background(.black.opacity(0.04))
@@ -767,10 +794,16 @@ struct OctonautInlineMediaView: View {
                     }
                 }
                 .frame(height: galleryHeight)
-            } else if post.mediaKind == "image" || post.mediaKind == "gif", let url = post.mediaURL {
+            } else if post.mediaKind == "image" || post.mediaKind == "gif", post.mediaURL != nil {
                 Button { openOrReveal(at: 0) } label: {
                     ZStack {
-                        OctonautAsyncImage(url: url, contentMode: .fit)
+                        OctonautAsyncImage(
+                            url: post.imageURL(
+                                displayWidth: OctonautImageDisplayWidth.card,
+                                scale: displayScale
+                            ),
+                            contentMode: .fit
+                        )
                             .frame(maxWidth: .infinity)
                             .frame(height: maximumHeight)
                             .blur(radius: shouldBlurMedia ? 12 : 0)
@@ -1116,6 +1149,10 @@ private final class OctonautNetworkStatus {
 
 struct OctonautZoomableImage: View {
     let url: URL
+    /// A smaller copy of the same image that is probably already decoded --
+    /// the one the row behind this view drew. Shown while `url` loads so the
+    /// viewer opens on the picture rather than on a spinner.
+    var placeholderURL: URL?
     let accessibilityLabel: String
     var onZoomChange: ((Bool) -> Void)?
     @State private var scale: CGFloat = 1
@@ -1161,19 +1198,26 @@ struct OctonautZoomableImage: View {
         .accessibilityLabel(accessibilityLabel)
         .accessibilityHint("Double tap to zoom. Pinch to zoom and drag to pan.")
         .task(id: url) {
-            image = nil
             loadFailed = false
             scale = 1
             baseScale = 1
             offset = .zero
             baseOffset = .zero
             onZoomChange?(false)
+            // Only a cached copy is used as a stand-in. Fetching one purely to
+            // fill the gap would put a second request on the wire for an image
+            // that is already being fetched at the size actually wanted.
+            image = placeholderURL.flatMap(OctonautImageCache.cachedImage(for:))
             do {
-                image = try await OctonautImageCache.image(for: url)
+                let fullSize = try await OctonautImageCache.image(for: url)
+                guard !Task.isCancelled else { return }
+                image = fullSize
             } catch is CancellationError {
                 return
             } catch {
-                loadFailed = true
+                // A stand-in on screen is better than an error over the top
+                // of it; only a viewer with nothing to show reports a failure.
+                loadFailed = image == nil
             }
         }
     }
@@ -1316,6 +1360,8 @@ struct OctonautMediaViewer: View {
     @State private var activePlayer: AVPlayer?
     @State private var isPlayerMuted = false
     @State private var chromeHideTask: Task<Void, Never>?
+    @State private var networkStatus = OctonautNetworkStatus.shared
+    @Environment(\.displayScale) private var displayScale
 
     private let saveCoordinator = OctonautMediaSaveCoordinator()
 
@@ -1341,9 +1387,32 @@ struct OctonautMediaViewer: View {
         _isRevealed = State(initialValue: initiallyRevealed)
     }
 
+    /// Reddit's full-size media, which is what saving, sharing and exporting
+    /// all mean by "this image".
     private var mediaURLs: [URL] {
         if post.galleryURLs.isEmpty, let mediaURL = post.mediaURL { return [mediaURL] }
         return post.galleryURLs
+    }
+
+    /// What the viewer actually displays: full resolution on Wi-Fi, and
+    /// Reddit's largest pre-made copy on a metered connection.
+    private func displayedImageURL(at page: Int) -> URL {
+        post.viewerImageURL(page: page, isConnectedViaWiFi: networkStatus.isConnectedViaWiFi)
+            ?? mediaURLs[page]
+    }
+
+    /// The copy the feed row behind this viewer already drew.
+    ///
+    /// It is usually still in the decoded cache, so handing it over means the
+    /// image is on screen the instant the viewer opens and sharpens when the
+    /// full-size one arrives -- rather than the reader watching a spinner
+    /// where a perfectly good picture had been a moment earlier.
+    private func placeholderImageURL(at page: Int) -> URL? {
+        post.imageURL(
+            page: page,
+            displayWidth: OctonautImageDisplayWidth.inlinePage(count: mediaURLs.count),
+            scale: displayScale
+        )
     }
 
     private var pagePosition: Binding<Int?> {
@@ -1401,7 +1470,8 @@ struct OctonautMediaViewer: View {
                                         } else {
                                             ZStack {
                                                 OctonautZoomableImage(
-                                                    url: url,
+                                                    url: displayedImageURL(at: index),
+                                                    placeholderURL: placeholderImageURL(at: index),
                                                     accessibilityLabel: "Image \(index + 1) of \(mediaURLs.count)",
                                                     onZoomChange: { isZoomed = $0 }
                                                 )

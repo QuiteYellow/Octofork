@@ -83,6 +83,52 @@ private actor OctonautImageDataCache {
     }
 }
 
+/// The widths, in points, that the app draws Reddit images at.
+///
+/// Both the row that shows an image and the preloader that warms it ahead of
+/// the row choose their copy from these, so the two always agree and the
+/// prefetch is never spent on a URL the row will not ask for.
+///
+/// They are constants rather than measurements on purpose. Reddit's ladder
+/// tops out near 1080 pixels, so every full-width row on every current device
+/// -- 320 points at 3x and 680 points at 2x alike -- resolves to the same top
+/// rung, and measuring would separate values that cannot select differently.
+/// What the numbers have to get right is the order of magnitude, so that a
+/// 70-point thumbnail stops fetching a copy sized for a full-bleed card.
+enum OctonautImageDisplayWidth {
+    /// A full-bleed image in a feed or post-detail row.
+    static let card: CGFloat = 430
+    /// The square preview on a compact row. Matches its 70-point frame.
+    static let compactThumbnail: CGFloat = 70
+    /// One tile of the gallery grid, at its narrowest.
+    static let galleryTile: CGFloat = 180
+
+    /// The width to choose a copy for one page of a post's inline media.
+    ///
+    /// The inline strip shows two images side by side when there is more than
+    /// one. Note that this is the width a copy is *chosen* for, not the width
+    /// it is *drawn* at -- the strip lays out from real geometry. Keeping the
+    /// two separate is deliberate: the preloader has no geometry, and a
+    /// prefetch that picked a copy two pixels away from the row's choice
+    /// would fetch the image twice instead of once.
+    static func inlinePage(count: Int) -> CGFloat {
+        count > 1 ? card / 2 : card
+    }
+}
+
+@MainActor
+extension OctonautImageDisplayWidth {
+    /// The display scale for code with no SwiftUI environment to read it from
+    /// -- the preloader, which has to pick the same copy a view will.
+    ///
+    /// Views use `@Environment(\.displayScale)` instead, which is the same
+    /// number and survives being rendered somewhere unusual.
+    static var currentScale: CGFloat {
+        let scale = UITraitCollection.current.displayScale
+        return scale > 0 ? scale : 3
+    }
+}
+
 @MainActor
 enum OctonautImageCache {
     /// Reddit's preview hosts routinely serve 3000-4000px sources. Decoding one
