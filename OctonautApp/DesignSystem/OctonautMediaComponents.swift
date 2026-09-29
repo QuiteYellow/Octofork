@@ -452,6 +452,110 @@ final class OctonautPlaybackCoordinator {
     }
 }
 
+/// The device's power state, as a value a view can observe.
+///
+/// Separate from `OctonautNetworkStatus` because it answers a different
+/// question and changes for a different reason, and shared because the
+/// notification is a process-wide fact rather than a per-view one.
+@MainActor
+@Observable
+final class OctonautPowerState {
+    static let shared = OctonautPowerState()
+
+    private(set) var isLowPowerModeEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.NSProcessInfoPowerStateDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            let isEnabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+            MainActor.assumeIsolated {
+                self?.isLowPowerModeEnabled = isEnabled
+            }
+        }
+    }
+}
+
+/// Whether media may be warmed ahead of what the reader is looking at.
+enum OctonautPrefetchPolicy {
+    /// `REDDIT-ERROR-003` asks for prefetch to be cancelled in Low Power Mode.
+    /// Whether the app obeys the mode at all is the reader's `respectsLowPowerMode`
+    /// setting, which until now had no reader: it was persisted, shown in
+    /// Settings, and consulted nowhere.
+    static func allowsPrefetch(isLowPowerModeEnabled: Bool, respectsLowPowerMode: Bool) -> Bool {
+        !(isLowPowerModeEnabled && respectsLowPowerMode)
+    }
+}
+
+/// Admission control for prefetch: how many warming requests may be in flight
+/// at once, and which URL goes next.
+///
+/// `REDDIT-ERROR-003` requires concurrency to be bounded by work type. The feed
+/// warms twenty rows ahead, which is up to forty images, and starting all of
+/// them at once means the visible row's image queues behind whichever of them
+/// the connection happens to be serving. Ordering is first in, first out, which
+/// for a feed is also nearest-first.
+///
+/// A value type with no tasks in it, so the bound can be tested without a
+/// network.
+struct OctonautPrefetchQueue {
+    /// Chosen to sit under `URLSessionConfiguration`'s default six connections
+    /// per host, so a visible read always has somewhere to go even when the
+    /// queue is full.
+    static let defaultMaximumConcurrent = 4
+
+    let maximumConcurrent: Int
+    private var active: Set<URL> = []
+    private var waiting: [URL] = []
+
+    init(maximumConcurrent: Int = defaultMaximumConcurrent) {
+        self.maximumConcurrent = max(maximumConcurrent, 1)
+    }
+
+    var activeCount: Int { active.count }
+    var waitingCount: Int { waiting.count }
+
+    func contains(_ url: URL) -> Bool { active.contains(url) || waiting.contains(url) }
+
+    /// Takes a URL on unless it is already known. Returns whether it was new.
+    mutating func enqueue(_ url: URL) -> Bool {
+        guard !contains(url) else { return false }
+        waiting.append(url)
+        return true
+    }
+
+    /// The next URL that may start now, or nil when the bound is reached or
+    /// nothing is waiting.
+    mutating func startNext() -> URL? {
+        guard active.count < maximumConcurrent, !waiting.isEmpty else { return nil }
+        let url = waiting.removeFirst()
+        active.insert(url)
+        return url
+    }
+
+    mutating func finish(_ url: URL) {
+        active.remove(url)
+    }
+
+    /// Forgets a URL whether it had started or not, for a row that has aged out
+    /// of the window.
+    mutating func remove(_ url: URL) {
+        active.remove(url)
+        waiting.removeAll { $0 == url }
+    }
+
+    /// Empties the queue and reports what had started, so those tasks can be
+    /// cancelled.
+    mutating func cancelAll() -> Set<URL> {
+        let cancelled = active
+        active.removeAll()
+        waiting.removeAll()
+        return cancelled
+    }
+}
+
 /// Warms the small media window immediately around the visible feed rows.
 /// Prepared players stay paused until their row reports that it is on screen.
 @MainActor
@@ -470,8 +574,45 @@ final class OctonautFeedMediaPreloader {
     private var imageTasks: [URL: Task<Void, Never>] = [:]
     private var videoTasks: [VideoKey: Task<OctonautAVPlayerFactory.Playback, Never>] = [:]
     private var mediaOrder: [MediaKey] = []
+    /// Readable so a test can assert the bound without a network to watch.
+    private(set) var prefetchQueue = OctonautPrefetchQueue()
+    /// `nonisolated(unsafe)` so `deinit` can reach it. The token is written
+    /// once in `init` and read once in `deinit`, both on the main actor, and
+    /// nothing else ever touches it.
+    nonisolated(unsafe) private var memoryWarningObserver: (any NSObjectProtocol)?
+
+    /// Whether warming ahead of the visible rows is allowed at all. The feed
+    /// sets it, because the answer depends on a setting the preloader has no
+    /// business reaching for. Turning it off cancels what is already warming.
+    var allowsPrefetch = true {
+        didSet {
+            guard oldValue, !allowsPrefetch else { return }
+            cancelPrefetch()
+        }
+    }
+
+    init() {
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                // Warming is the first thing to give up under memory pressure:
+                // nothing on screen is waiting for any of it. `PERF-003`.
+                self?.cancelPrefetch()
+            }
+        }
+    }
+
+    deinit {
+        if let memoryWarningObserver {
+            NotificationCenter.default.removeObserver(memoryWarningObserver)
+        }
+    }
 
     func preload(posts: some Sequence<PostCardModel>, compact: Bool) {
+        guard allowsPrefetch else { return }
         for post in posts {
             for url in imageURLs(for: post, compact: compact) {
                 prepareImage(at: url)
@@ -487,6 +628,18 @@ final class OctonautFeedMediaPreloader {
                 prepareVideo(at: url, audioURL: audioURL)
             }
         }
+    }
+
+    /// Cancels every image this preloader is warming and leaves the visible
+    /// rows alone. Prepared players are left in place: a video is expensive to
+    /// re-prepare and a visible row may already own one.
+    func cancelPrefetch() {
+        for url in prefetchQueue.cancelAll() {
+            imageTasks.removeValue(forKey: url)?.cancel()
+        }
+        // Dropping the task that awaits a download does not stop the download:
+        // the cache keeps one request per URL so that several rows can share it.
+        OctonautImageCache.cancelWarmingDownloads()
     }
 
     fileprivate func playback(videoURL: URL, audioURL: URL?) async -> OctonautAVPlayerFactory.Playback {
@@ -509,12 +662,27 @@ final class OctonautFeedMediaPreloader {
     }
 
     private func prepareImage(at url: URL) {
-        guard imageTasks[url] == nil else { return }
-        imageTasks[url] = Task { @MainActor in
-            _ = try? await OctonautImageCache.image(for: url)
-        }
+        guard imageTasks[url] == nil, prefetchQueue.enqueue(url) else { return }
         mediaOrder.append(.image(url))
         trimPreparedMedia()
+        startWaitingImages()
+    }
+
+    /// Starts as many warming downloads as the bound allows, and no more. Each
+    /// one reports back so the next may go, which is what keeps the queue
+    /// draining without a timer.
+    private func startWaitingImages() {
+        while let url = prefetchQueue.startNext() {
+            imageTasks[url] = Task(priority: .utility) { @MainActor [weak self] in
+                _ = try? await OctonautImageCache.image(for: url, priority: .prefetch)
+                self?.finishWarming(url)
+            }
+        }
+    }
+
+    private func finishWarming(_ url: URL) {
+        prefetchQueue.finish(url)
+        startWaitingImages()
     }
 
     @discardableResult
@@ -545,6 +713,7 @@ final class OctonautFeedMediaPreloader {
             switch mediaOrder.removeFirst() {
             case .image(let expiredURL):
                 imageTasks.removeValue(forKey: expiredURL)?.cancel()
+                prefetchQueue.remove(expiredURL)
             case .video(let expiredKey):
                 // A visible row may still own this player. Removing the cache's
                 // reference is enough; the row controls its playback lifecycle.

@@ -335,8 +335,18 @@ struct FeedView: View {
     @State private var mediaPreloader = OctonautFeedMediaPreloader()
     @State private var scrollTracker = FeedScrollTracker()
     @State private var markScheduler = FeedSeenMarkScheduler()
+    @State private var powerState = OctonautPowerState.shared
 
     private let mediaPreloadDistance = 20
+
+    /// Warming twenty rows ahead is the most speculative work the feed does, so
+    /// it is the first thing Low Power Mode should stop -- `REDDIT-ERROR-003`.
+    private var allowsPrefetch: Bool {
+        OctonautPrefetchPolicy.allowsPrefetch(
+            isLowPowerModeEnabled: powerState.isLowPowerModeEnabled,
+            respectsLowPowerMode: dependencies.settings.respectLowPowerMode
+        )
+    }
 
     @State private var availableHeight: CGFloat = 800
     private var layoutCommunity: String? { descriptor.kind == .community ? descriptor.name : nil }
@@ -497,6 +507,9 @@ struct FeedView: View {
                 posts: visiblePosts.prefix(mediaPreloadDistance),
                 compact: compactRows
             )
+        }
+        .onChange(of: allowsPrefetch, initial: true) { _, allowed in
+            mediaPreloader.allowsPrefetch = allowed
         }
         .sheet(isPresented: $showingLogin) {
             RedditLoginView(accounts: dependencies.accounts)

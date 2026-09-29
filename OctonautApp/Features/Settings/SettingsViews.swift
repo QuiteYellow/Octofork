@@ -333,6 +333,8 @@ struct SettingsDetailView: View {
                 Picker("Cellular", selection: Binding(get: { dependencies.settings.cellularDataMode }, set: { dependencies.settings.cellularDataMode = $0 })) { Text("Normal").tag(DataMode.normal); Text("Low Data").tag(DataMode.lowData) }
                 Toggle("Respect system Low Data Mode", isOn: Binding(get: { dependencies.settings.respectSystemLowDataMode }, set: { dependencies.settings.respectSystemLowDataMode = $0 }))
                 Toggle("Respect Low Power Mode", isOn: Binding(get: { dependencies.settings.respectLowPowerMode }, set: { dependencies.settings.respectLowPowerMode = $0 }))
+                Text("In Low Power Mode, images and video are no longer loaded ahead of the rows you have reached.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             Section("Storage") {
                 Picker("Image cache limit", selection: Binding(

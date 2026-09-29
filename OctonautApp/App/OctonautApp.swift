@@ -27,6 +27,7 @@ struct OctonautApp: App {
                 .environment(dependencies)
                 .id(dependencies.resetGeneration)
                 .task {
+                    OctonautImageCache.beginRespondingToMemoryWarnings()
                     await OctonautImageCache.configure(
                         diskCapacityMB: dependencies.settings.imageCacheLimitMB
                     )
