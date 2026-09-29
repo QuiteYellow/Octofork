@@ -1011,6 +1011,13 @@ struct OctonautVideoPlayer: View {
     @State private var failureObservers: [any NSObjectProtocol] = []
     @State private var recoveryAttempts = 0
     @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
+    /// Whether the item has resolved far enough to have a frame on screen.
+    ///
+    /// The surface is mounted as soon as there is a player object, which is
+    /// well before there is anything in it, so it spends that time black and
+    /// then snaps to the first frame. Fading that last step is the difference
+    /// between a video appearing and a video popping.
+    @State private var showsFrame = false
     @Environment(\.scenePhase) private var scenePhase
 
     /// A composed player is the only kind worth preparing ahead, so it is the
@@ -1034,12 +1041,19 @@ struct OctonautVideoPlayer: View {
     var body: some View {
         Group {
             if let player {
-                OctonautSystemIsolatedVideoPlayer(player: player, showsPlaybackControls: false)
-                    .background(.black)
-                    .aspectRatio(aspectRatio, contentMode: .fit)
-                    .overlay(alignment: .topLeading) {
-                        OctonautMuxWarningBadge(outcome: muxOutcome)
-                    }
+                ZStack {
+                    // The same black the placeholder shows, so the fade is the
+                    // frame arriving over it rather than the whole surface
+                    // appearing from nothing.
+                    Color.black
+                    if !showsFrame { ProgressView().tint(.white) }
+                    OctonautSystemIsolatedVideoPlayer(player: player, showsPlaybackControls: false)
+                        .opacity(showsFrame ? 1 : 0)
+                        .overlay(alignment: .topLeading) {
+                            OctonautMuxWarningBadge(outcome: muxOutcome)
+                        }
+                }
+                .aspectRatio(aspectRatio, contentMode: .fit)
             } else {
                 ZStack {
                     Color.black
@@ -1081,6 +1095,24 @@ struct OctonautVideoPlayer: View {
                 measuredAspectRatio = playback.aspectRatio
             }
             adopt(playback.player, muxOutcome: playback.muxOutcome)
+        }
+        .task(id: player.map(ObjectIdentifier.init)) {
+            showsFrame = false
+            guard let item = player?.currentItem else {
+                // No item to wait on: show whatever the surface has rather
+                // than leave it hidden.
+                showsFrame = true
+                return
+            }
+            // Bounded, because a stalled item must not leave the video
+            // invisible -- the worst case is the black it would have shown
+            // anyway, and then the frame.
+            let deadline = Date.now.addingTimeInterval(4)
+            while !Task.isCancelled, item.status == .unknown, Date.now < deadline {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.22)) { showsFrame = true }
         }
         .onChange(of: scenePhase) { _, phase in
             // Coming back from the background on a failed item, as Winston
@@ -1307,7 +1339,7 @@ struct OctonautSystemIsolatedVideoPlayer: UIViewControllerRepresentable {
 
 @MainActor
 @Observable
-private final class OctonautNetworkStatus {
+final class OctonautNetworkStatus {
     static let shared = OctonautNetworkStatus()
 
     private(set) var isConnectedViaWiFi = false

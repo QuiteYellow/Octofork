@@ -281,7 +281,7 @@ struct MacRootView: View {
             // The Mac window has no per-section profile screen, so a profile
             // link lands on Accounts.
             sidebarSelection = .accounts
-        case .settings, .conversation, .composer, .gallery:
+        case .settings, .conversation, .composer, .gallery, .gallerySection:
             break
         }
     }
