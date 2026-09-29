@@ -386,6 +386,14 @@ struct UserSectionView: View {
     @State private var state: OctonautLoadState = .idle
     @State private var isLoadingMore = false
     @State private var actionError: String?
+    /// The `taskID` the rows on screen were loaded for.
+    ///
+    /// `.task(id:)` restarts when the view comes back, so opening a post and
+    /// returning re-ran the load -- which reassigns `posts` from the first
+    /// page and throws away everything paged in since. The scroll position
+    /// went with it, because the list it belonged to no longer existed.
+    /// Refreshing is what pull-to-refresh is for.
+    @State private var loadedTaskID: String?
 
     private var offersContentPicker: Bool { section == .saved }
 
@@ -449,7 +457,10 @@ struct UserSectionView: View {
         .navigationTitle(section.title)
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load(forceRefresh: true) }
-        .task(id: taskID) { await load() }
+        .task(id: taskID) {
+            guard loadedTaskID != taskID else { return }
+            await load()
+        }
         .alert(
             "Reddit could not be updated",
             isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })
@@ -521,6 +532,7 @@ struct UserSectionView: View {
             comments = page.comments
             nextPage = page.nextPage
             loadedContent = content
+            loadedTaskID = taskID
             state = (content == .posts ? posts.isEmpty : comments.isEmpty) ? .empty : .loaded
         } catch is CancellationError {
             return
