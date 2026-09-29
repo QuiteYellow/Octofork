@@ -704,6 +704,219 @@ final class DomainTests: XCTestCase {
         )
     }
 
+    private func galleryPost(
+        id: String, kind: String, url: String, aspectRatio: CGFloat? = nil
+    ) -> PostCardModel {
+        PostCardModel(
+            id: id, community: "pics", author: "someone", title: "A post", body: "",
+            score: 1, comments: 0, age: "1h", vote: 0, isSaved: false, isNSFW: false,
+            isSpoiler: false, isSticky: false, isVideo: kind == "video",
+            hasMedia: kind != "none", mediaTitle: kind.capitalized,
+            shareURL: URL(string: "https://www.reddit.com/r/pics/comments/\(id)")!,
+            mediaURL: URL(string: url), thumbnailURL: URL(string: url),
+            mediaKind: kind, mediaAspectRatio: aspectRatio)
+    }
+
+    @MainActor
+    func testGalleryLeavesOutLinkPosts() {
+        let posts = [
+            galleryPost(id: "p1", kind: "image", url: "https://i.redd.it/a.jpg"),
+            // A link post has a thumbnail, so it passes `hasMedia` -- which is
+            // exactly how link previews used to reach the grid.
+            galleryPost(id: "p2", kind: "link", url: "https://example.com/thumb.jpg"),
+            galleryPost(id: "p3", kind: "video", url: "https://v.redd.it/b.mp4"),
+            galleryPost(id: "p4", kind: "none", url: "https://example.com/x"),
+        ]
+
+        let items = GalleryMediaItem.items(from: posts)
+
+        XCTAssertEqual(items.map(\.post.id), ["p1", "p3"])
+    }
+
+    @MainActor
+    func testGalleryTileUsesPublishedAspectRatioBeforeItsImageLoads() {
+        // Within the allowed range, so this checks the published ratio is
+        // used rather than the clamp.
+        let tall = galleryPost(id: "p1", kind: "image", url: "https://i.redd.it/tall.jpg", aspectRatio: 0.75)
+        let item = GalleryMediaItem.items(from: [tall]).first
+
+        // Nothing has been fetched, so this is the published ratio or nothing.
+        // Before the fix a tile was square until its bytes arrived.
+        XCTAssertEqual(item?.aspectRatio, 0.75)
+    }
+
+    @MainActor
+    func testGalleryTileFallsBackWhenNoRatioIsPublished() {
+        let unknown = galleryPost(id: "p1", kind: "image", url: "https://i.redd.it/x.jpg")
+        let item = GalleryMediaItem.items(from: [unknown]).first
+
+        XCTAssertEqual(item?.aspectRatio, GalleryMediaItem.fallbackAspectRatio)
+    }
+
+    @MainActor
+    func testVideoTileKeepsTheVideosShapeNotItsPosters() {
+        let video = galleryPost(
+            id: "v1", kind: "video", url: "https://v.redd.it/v1-poster.jpg",
+            aspectRatio: 16.0 / 9.0)
+        let item = GalleryMediaItem.items(from: [video]).first
+        XCTAssertEqual(item?.aspectRatio, 16.0 / 9.0)
+
+        // Reddit's poster for a video is a crop of its own proportions.
+        // Measuring it must not resize the tile, or the still arriving moves
+        // the grid and the video then letterboxes inside the wrong box.
+        if let preview = item?.previewURL {
+            GalleryTileRatios.remember(0.5, for: preview)
+        }
+
+        XCTAssertEqual(item?.aspectRatio, 16.0 / 9.0)
+    }
+
+    @MainActor
+    func testVideoWithoutPublishedDimensionsFallsBackToLandscape() {
+        let video = galleryPost(id: "v2", kind: "video", url: "https://v.redd.it/v2.mp4")
+        let item = GalleryMediaItem.items(from: [video]).first
+
+        XCTAssertEqual(item?.aspectRatio, GalleryMediaItem.videoFallbackAspectRatio)
+    }
+
+    func testDirectImagePostCarriesItsPublishedDimensions() throws {
+        // A direct i.redd.it link with a preview block -- the ordinary shape
+        // of an image post, and the branch that used to discard the size.
+        let data = Data(
+            #"""
+            {"data":{"after":null,"children":[{"kind":"t3","data":{
+              "id":"img1","name":"t3_img1","title":"A picture","author":"someone",
+              "subreddit":"pics","permalink":"/r/pics/comments/img1/a_picture/",
+              "created_utc":1700000000,"post_hint":"image",
+              "url":"https://i.redd.it/example.jpg",
+              "preview":{"images":[{"source":{"url":"https://preview.redd.it/example.jpg","width":1200,"height":1600}}]}
+            }}]}}
+            """#.utf8)
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        XCTAssertEqual(card.mediaAspectRatio, 1200.0 / 1600.0)
+    }
+
+    func testAnimatedGIFCarriesTheMP4VariantsDimensions() throws {
+        let data = Data(
+            #"""
+            {"data":{"after":null,"children":[{"kind":"t3","data":{
+              "id":"gif1","name":"t3_gif1","title":"A gif","author":"someone",
+              "subreddit":"gifs","permalink":"/r/gifs/comments/gif1/a_gif/",
+              "created_utc":1700000000,"url":"https://i.redd.it/example.gif",
+              "preview":{"images":[{"source":{"url":"https://preview.redd.it/example.png","width":600,"height":800},
+                "variants":{"mp4":{"source":{"url":"https://preview.redd.it/example.mp4","width":480,"height":640}}}}]}
+            }}]}}
+            """#.utf8)
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        // The mp4 variant's own figures, not the 16:9 every GIF used to be
+        // letterboxed into.
+        XCTAssertEqual(card.mediaAspectRatio, 480.0 / 640.0)
+    }
+
+    func testHLSVideoWithoutRedditVideoBlockUsesItsPreviewDimensions() throws {
+        let data = Data(
+            #"""
+            {"data":{"after":null,"children":[{"kind":"t3","data":{
+              "id":"vid1","name":"t3_vid1","title":"A video","author":"someone",
+              "subreddit":"videos","permalink":"/r/videos/comments/vid1/a_video/",
+              "created_utc":1700000000,"url":"https://v.redd.it/abcdef",
+              "preview":{"images":[{"source":{"url":"https://preview.redd.it/v.png","width":720,"height":1280}}]}
+            }}]}}
+            """#.utf8)
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        // An HLS playlist has no tracks to measure, so without this the post
+        // could never stop being 16:9.
+        XCTAssertEqual(card.mediaAspectRatio, 720.0 / 1280.0)
+    }
+
+    @MainActor
+    func testTallInfographicIsClampedSoItCannotBecomeABar() {
+        // 1:8 is an ordinary shape for a Reddit infographic. Unclamped, at a
+        // ~195pt column that is a 1,500pt bar down one side of the grid.
+        let tall = galleryPost(
+            id: "i1", kind: "image", url: "https://i.redd.it/tall.png", aspectRatio: 0.125)
+        let item = GalleryMediaItem.items(from: [tall]).first
+
+        XCTAssertEqual(item?.aspectRatio, GalleryMediaItem.allowedRatios.lowerBound)
+    }
+
+    @MainActor
+    func testPanoramaIsClampedTheOtherWay() {
+        let wide = galleryPost(
+            id: "i2", kind: "image", url: "https://i.redd.it/wide.png", aspectRatio: 6.0)
+        let item = GalleryMediaItem.items(from: [wide]).first
+
+        XCTAssertEqual(item?.aspectRatio, GalleryMediaItem.allowedRatios.upperBound)
+    }
+
+    @MainActor
+    func testOrdinaryShapesAreLeftAlone() {
+        let normal = galleryPost(
+            id: "i3", kind: "image", url: "https://i.redd.it/n.png", aspectRatio: 0.8)
+        let item = GalleryMediaItem.items(from: [normal]).first
+
+        XCTAssertEqual(item?.aspectRatio, 0.8)
+    }
+
+    func testGalleryCarriesAShapePerImage() throws {
+        let data = Data(
+            #"""
+            {"data":{"after":null,"children":[{"kind":"t3","data":{
+              "id":"g1","name":"t3_g1","title":"A gallery","author":"someone",
+              "subreddit":"pics","permalink":"/r/pics/comments/g1/a_gallery/",
+              "created_utc":1700000000,"is_gallery":true,
+              "gallery_data":{"items":[{"media_id":"aaa"},{"media_id":"bbb"}]},
+              "media_metadata":{
+                "aaa":{"s":{"u":"https://preview.redd.it/aaa.jpg","x":1200,"y":800}},
+                "bbb":{"s":{"u":"https://preview.redd.it/bbb.jpg","x":600,"y":900}}}
+            }}]}}
+            """#.utf8)
+
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+        let card = PostCardModel(post: post)
+
+        // Every page knows its own shape, not just the first -- which is what
+        // stopped gallery tiles being laid out at the fallback and then
+        // shuffled into another column once their bytes arrived.
+        XCTAssertEqual(card.galleryAspectRatios.count, 2)
+        XCTAssertEqual(card.galleryAspectRatios.first ?? nil, 1200.0 / 800.0)
+        XCTAssertEqual(card.galleryAspectRatios.last ?? nil, 600.0 / 900.0)
+    }
+
+    @MainActor
+    func testGalleryTileUsesItsOwnPageShape() {
+        let data = Data(
+            #"""
+            {"data":{"after":null,"children":[{"kind":"t3","data":{
+              "id":"g2","name":"t3_g2","title":"A gallery","author":"someone",
+              "subreddit":"pics","permalink":"/r/pics/comments/g2/a_gallery/",
+              "created_utc":1700000000,"is_gallery":true,
+              "gallery_data":{"items":[{"media_id":"aaa"},{"media_id":"bbb"}]},
+              "media_metadata":{
+                "aaa":{"s":{"u":"https://preview.redd.it/aaa2.jpg","x":1200,"y":800}},
+                "bbb":{"s":{"u":"https://preview.redd.it/bbb2.jpg","x":600,"y":900}}}
+            }}]}}
+            """#.utf8)
+
+        guard let post = try? RedditJSONCodec.decodePosts(data).items.first else {
+            return XCTFail("fixture did not decode")
+        }
+        let items = GalleryMediaItem.items(from: [PostCardModel(post: post)])
+
+        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items.first?.aspectRatio, 1200.0 / 800.0)
+        XCTAssertEqual(items.last?.aspectRatio, 600.0 / 900.0)
+    }
+
     @MainActor
     func testSubscribedCommunitiesLoadAndRestoreAccountFavorites() async throws {
         let accountID = AccountID()

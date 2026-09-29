@@ -552,11 +552,18 @@ enum RedditJSONCodec {
                 ?? (index == 0 ? targetURL : nil)
 
             if let candidateURL, isDirectImageURL(candidateURL) {
+                // The preview block describes this same image, so its source
+                // dimensions belong to the URL being returned here. Dropping
+                // them meant almost every image post -- a direct i.redd.it
+                // link takes this branch -- reached the UI with no shape,
+                // leaving anything that lays out ahead of the download to
+                // guess and then correct itself once the bytes arrived.
+                let dimensions = previewImageDimensions(candidate)
                 return .image(
                     url: candidateURL,
                     thumbnailURL: thumbnail(candidate),
-                    width: nil,
-                    height: nil
+                    width: dimensions?.width,
+                    height: dimensions?.height
                 )
             }
         }
@@ -640,14 +647,20 @@ enum RedditJSONCodec {
         }
 
         guard let targetURL else { return nil }
+        // The preview still is a frame of this video, so its source
+        // dimensions are the video's. Worth reaching for on the HLS path in
+        // particular: `measuredAspectRatio` returns nothing for a playlist,
+        // so a v.redd.it post with no `reddit_video` block and no published
+        // size had no way to ever stop being 16:9.
+        let previewDimensions = previewImageDimensions(object)
         if targetURL.host?.lowercased() == "v.redd.it" {
             return .video(
                 url: redditHLSURL(for: targetURL),
                 audioURL: nil,
                 thumbnailURL: thumbnail(object),
                 isGIF: false,
-                width: nil,
-                height: nil
+                width: previewDimensions?.width,
+                height: previewDimensions?.height
             )
         }
         guard isDirectVideoURL(targetURL) else { return nil }
@@ -656,8 +669,8 @@ enum RedditJSONCodec {
             audioURL: nil,
             thumbnailURL: thumbnail(object),
             isGIF: false,
-            width: nil,
-            height: nil
+            width: previewDimensions?.width,
+            height: previewDimensions?.height
         )
     }
 
@@ -681,13 +694,19 @@ enum RedditJSONCodec {
                 ?? animatedVariantURL(object)
                 ?? animatedURLBySubstitution(candidateURL) else { continue }
 
+            // The mp4 variant publishes its size beside the URL that was
+            // just read out of it. Without this a GIF reached the UI shapeless
+            // and was laid out at the 16:9 default -- which almost no GIF is,
+            // so almost every one of them was letterboxed.
+            let dimensions = animatedMediaDimensions(candidate)
+                ?? animatedMediaDimensions(object)
             return .video(
                 url: playableURL,
                 audioURL: nil,
                 thumbnailURL: thumbnail(candidate) ?? thumbnail(object),
                 isGIF: true,
-                width: nil,
-                height: nil
+                width: dimensions?.width,
+                height: dimensions?.height
             )
         }
         return nil
@@ -695,6 +714,19 @@ enum RedditJSONCodec {
 
     private static func isAnimatedImageURL(_ url: URL) -> Bool {
         ["gif", "gifv"].contains(url.pathExtension.lowercased())
+    }
+
+    /// The size of the animation, preferring the mp4 variant's own figures
+    /// and falling back to the still's -- which is a frame of the same thing.
+    private static func animatedMediaDimensions(
+        _ object: [String: RedditJSONValue]
+    ) -> (width: Int?, height: Int?)? {
+        let mp4Source = object["preview"]?.objectValue?["images"]?.arrayValue?.first?
+            .objectValue?["variants"]?.objectValue?["mp4"]?.objectValue?["source"]?.objectValue
+        if let mp4Source, let width = int(mp4Source["width"]), let height = int(mp4Source["height"]) {
+            return (width, height)
+        }
+        return previewImageDimensions(object)
     }
 
     private static func animatedVariantURL(_ object: [String: RedditJSONValue]) -> URL? {

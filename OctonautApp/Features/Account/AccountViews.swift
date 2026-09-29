@@ -389,6 +389,12 @@ struct UserSectionView: View {
 
     private var offersContentPicker: Bool { section == .saved }
 
+    /// Sections worth seeing as pictures. Comments have nothing to show, and
+    /// the picker means Saved can be showing comments right now.
+    private var offersGallery: Bool {
+        content == .posts && [.saved, .upvoted, .downvoted, .hidden].contains(section)
+    }
+
     private var emptyMessage: String {
         switch (section, content) {
         case (.saved, .posts): return "Posts you save appear here."
@@ -448,6 +454,18 @@ struct UserSectionView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(section.title)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if offersGallery {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(
+                        value: FeatureRoute.gallerySection(username: username, section: section)
+                    ) {
+                        Label("Gallery Mode", systemImage: "square.grid.2x2")
+                    }
+                    .accessibilityLabel("Gallery Mode")
+                }
+            }
+        }
         .refreshable { await load(forceRefresh: true) }
         .task(id: taskID) { await load() }
         .alert(

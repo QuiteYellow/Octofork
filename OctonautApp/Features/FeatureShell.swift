@@ -865,7 +865,11 @@ struct OctonautDestinationView: View {
         case .composer(let kind):
             ComposerView(kind: kind, store: store)
         case .gallery(let descriptor):
-            GalleryView(descriptor: descriptor, store: store, router: router)
+            GalleryView(source: .feed(descriptor), store: store, router: router)
+        case .gallerySection(let username, let section):
+            GalleryView(
+                source: .userSection(username: username, section: section),
+                store: store, router: router)
         case .mediaURL(let url):
             MediaURLView(url: url)
         case .web(let url):
