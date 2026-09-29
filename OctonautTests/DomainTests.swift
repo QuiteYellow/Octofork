@@ -23,6 +23,7 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(Set(items.map(\.id)).count, 120)
     }
 
+    @MainActor
     func testGalleryUsesFullImageAndVideoThumbnail() {
         var post = PostCardModel.sample
         post.hasMedia = true
