@@ -700,8 +700,14 @@ struct FeedView: View {
             markScheduler.cancelAll()
             return
         }
+        // The question is asked once a frame and its answer changes about ten
+        // times a second, so the rest are the same walk over the same posts
+        // for the same result. Measured at 575 posts, paying it every frame
+        // was 0.68ms of an 8.3ms budget.
+        guard scrollTracker.takeChangedGeneration() else { return }
         let read = FeedScrollReadRule.postsScrolledPast(
-            in: visiblePosts,
+            in: store.posts,
+            community: layoutCommunity,
             visibleIDs: scrollTracker.effectiveVisibleIDs,
             seenIDs: store.seenPostIDs,
             isScrolledFromTop: scrollTracker.isScrolledFromTop

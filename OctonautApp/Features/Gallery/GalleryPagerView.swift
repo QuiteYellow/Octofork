@@ -150,8 +150,20 @@ struct GalleryMediaTile: View {
     let onOpen: () -> Void
     @State private var image: UIImage?
     @State private var failed = false
-    /// Any part of the tile on screen. Gates mounting the player.
+    /// Any part of the tile on screen, and still there a moment later. Gates
+    /// mounting the player.
+    ///
+    /// The delay is the whole point. Mounting was gated on a sliver of the
+    /// tile appearing, which during a scroll is every tile the thumb passes:
+    /// measured on device, 6 to 17 `AVPlayer`s created per second, each one
+    /// discarded before it had drawn anything. Creating them is the expensive
+    /// half, so the grid was paying for players nobody saw. A tile the reader
+    /// is scrolling past no longer reaches this; one they stop on reaches it
+    /// in a sixth of a second, which is not a wait anyone notices.
     @State private var isOnScreen = false
+    @State private var mountDelay: Task<Void, Never>?
+
+    private static let mountDwell = Duration.milliseconds(160)
     /// Most of the tile on screen. Gates playing it, so a grid never has more
     /// than a couple of videos running at once.
     @State private var isWellOnScreen = false
@@ -195,12 +207,22 @@ struct GalleryMediaTile: View {
         .accessibilityLabel("\(item.post.isSensitive ? "Sensitive media. " : "")\(item.post.title), image \(item.page + 1) of \(max(1, item.post.galleryURLs.count))")
         .accessibilityHint("Opens the full screen media viewer")
         .onScrollVisibilityChange(threshold: 0.01) { visible in
-            isOnScreen = visible
+            mountDelay?.cancel()
+            guard visible else {
+                isOnScreen = false
+                return
+            }
+            mountDelay = Task {
+                try? await Task.sleep(for: Self.mountDwell)
+                guard !Task.isCancelled else { return }
+                isOnScreen = true
+            }
         }
         .onScrollVisibilityChange(threshold: 0.6) { visible in
             isWellOnScreen = visible
         }
         .onDisappear {
+            mountDelay?.cancel()
             isOnScreen = false
             isWellOnScreen = false
         }

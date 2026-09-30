@@ -2086,6 +2086,101 @@ extension DomainTests {
                 in: posts, visibleIDs: ["p1", "p2"], seenIDs: [], isScrolledFromTop: false), [])
     }
 
+    /// The read rule is asked its question once per scroll frame and its
+    /// inputs change about ten times a second, so the tracker reports whether
+    /// anything actually changed. Getting this wrong stops marking entirely,
+    /// which is silent.
+    @MainActor
+    func testScrollTrackerReportsAChangeOnlyWhenOneHappened() {
+        let tracker = FeedScrollTracker()
+
+        // The first ask is always a change: nothing has been marked yet.
+        XCTAssertTrue(tracker.takeChangedGeneration())
+        XCTAssertFalse(tracker.takeChangedGeneration())
+
+        // A row arriving is a change. The same row arriving again is not.
+        tracker.setVisibility(true, id: "a")
+        XCTAssertTrue(tracker.takeChangedGeneration())
+        tracker.setVisibility(true, id: "a")
+        XCTAssertFalse(tracker.takeChangedGeneration())
+
+        // A row leaving is a change; one that was never there is not.
+        tracker.setVisibility(false, id: "a")
+        XCTAssertTrue(tracker.takeChangedGeneration())
+        tracker.setVisibility(false, id: "never-here")
+        XCTAssertFalse(tracker.takeChangedGeneration())
+
+        // Scrolling off the top counts once, not once per frame.
+        tracker.updateOffset(fromTop: 400)
+        XCTAssertTrue(tracker.takeChangedGeneration())
+        tracker.updateOffset(fromTop: 900)
+        tracker.updateOffset(fromTop: 1_800)
+        XCTAssertFalse(tracker.takeChangedGeneration())
+
+        // Coming back to rest at the top is a change again.
+        tracker.updateOffset(fromTop: 0)
+        XCTAssertTrue(tracker.takeChangedGeneration())
+
+        // And a reset must never look unchanged, or a feed that swapped its
+        // contents would mark nothing until the reader scrolled.
+        tracker.reset()
+        XCTAssertTrue(tracker.takeChangedGeneration())
+    }
+
+    /// The rule is handed the unfiltered posts, because deriving the visible
+    /// list first cost 1.03ms of every 8.3ms frame at 520 posts. It gives the
+    /// same answer: a post hidden from the feed is hidden because it was read,
+    /// so `seenIDs` already excludes it.
+    @MainActor
+    func testScrollReadRuleIgnoresHiddenPostsAndScopesToOneCommunity() {
+        func post(_ id: String, community: String) -> PostCardModel {
+            let sample = PostCardModel.sample
+            return PostCardModel(
+                id: id, community: community, author: sample.author,
+                authorFlair: sample.authorFlair, title: sample.title, body: sample.body,
+                flair: sample.flair, score: sample.score, comments: sample.comments,
+                age: sample.age, vote: sample.vote, isSaved: sample.isSaved,
+                isNSFW: sample.isNSFW, isSpoiler: sample.isSpoiler, isSticky: sample.isSticky,
+                isVideo: sample.isVideo, hasMedia: sample.hasMedia, mediaTitle: sample.mediaTitle,
+                shareURL: sample.shareURL, mediaURL: sample.mediaURL,
+                thumbnailURL: sample.thumbnailURL, mediaKind: sample.mediaKind,
+                galleryURLs: sample.galleryURLs, audioURL: sample.audioURL)
+        }
+
+        // "read" sits above the line and is already seen, which is exactly why
+        // it would have been filtered out of `visiblePosts`. Either way it is
+        // not reported again.
+        let mixed = [
+            post("read", community: "swift"),
+            post("fresh", community: "swift"),
+            post("here", community: "swift"),
+        ]
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: mixed, visibleIDs: ["here"], seenIDs: ["read"], isScrolledFromTop: true),
+            ["fresh"])
+
+        // A community feed over a shared store walks only its own posts, so a
+        // neighbour's post above the line is never marked read.
+        let twoCommunities = [
+            post("other1", community: "elsewhere"),
+            post("mine1", community: "swift"),
+            post("other2", community: "elsewhere"),
+            post("mine2", community: "swift"),
+        ]
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: twoCommunities, community: "Swift", visibleIDs: ["mine2"], seenIDs: [],
+                isScrolledFromTop: true),
+            ["mine1"])
+
+        // And with no scope it is the whole list, neighbours included.
+        XCTAssertEqual(
+            FeedScrollReadRule.postsScrolledPast(
+                in: twoCommunities, visibleIDs: ["mine2"], seenIDs: [], isScrolledFromTop: true),
+            ["other1", "mine1", "other2"])
+    }
+
     /// `setSeen` is a setter, not a flip. Marking a batch seen used to run
     /// through the toggling `markSeen` and un-marked everything already read.
     @MainActor

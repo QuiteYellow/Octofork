@@ -760,6 +760,48 @@ final class OctonautFeedMediaPreloader {
     }
 }
 
+extension View {
+    /// Gives a feed row's image its height before the image has it.
+    ///
+    /// Sized from the loaded image, a row is about as tall as its spinner
+    /// until the bytes land and then jumps to the picture's real height. In a
+    /// `List` that moves every row below it -- and when the row is above the
+    /// viewport, it moves the content under the reader's thumb. That is the
+    /// backwards jitter while scrolling, and being a layout event rather than
+    /// work on the main thread, no amount of profiling the scroll handlers
+    /// shows it.
+    ///
+    /// Reddit publishes the dimensions in `preview.images[].source` and the
+    /// decoder has always read them: `PostCardModel.mediaAspectRatio` is the
+    /// same value the gallery grid was taught to lay its tiles out from in
+    /// `2f87c68`. This is that fix, for the feed.
+    ///
+    /// Reserving the published ratio rather than a clamped one is deliberate:
+    /// the grid clamps to 9:16...16:9 and crops outside it, which is right
+    /// for a page of thumbnails and wrong for a full-width card where the
+    /// image is the content. So the shape a row settles at is exactly the
+    /// shape it settles at today -- it simply arrives before the bytes do,
+    /// instead of after. Capping how tall a feed image may be is a separate
+    /// question, and a product one.
+    ///
+    /// - Parameters:
+    ///   - height: A fixed height, which the wide interface supplies. Already
+    ///     stable, so it wins.
+    ///   - ratio: Reddit's published width-over-height, when there is one.
+    ///     Nothing is reserved without it, which is the old behaviour and the
+    ///     best available for a post carrying no dimensions.
+    @ViewBuilder
+    func reservedMediaBox(height: CGFloat?, ratio: CGFloat?) -> some View {
+        if let height {
+            frame(height: height)
+        } else if let ratio, ratio > 0 {
+            aspectRatio(ratio, contentMode: .fit)
+        } else {
+            self
+        }
+    }
+}
+
 /// A cached remote image with stable loading and failure states.
 struct OctonautAsyncImage: View {
     let url: URL?
@@ -989,7 +1031,7 @@ struct OctonautInlineMediaView: View {
                             contentMode: .fit
                         )
                             .frame(maxWidth: .infinity)
-                            .frame(height: maximumHeight)
+                            .reservedMediaBox(height: maximumHeight, ratio: post.mediaAspectRatio)
                             .blur(radius: shouldBlurMedia ? 12 : 0)
                         if shouldBlurMedia { sensitiveOverlay }
                     }

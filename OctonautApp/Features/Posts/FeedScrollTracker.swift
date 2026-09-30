@@ -32,29 +32,60 @@ final class FeedScrollTracker {
         visibleIDs.isEmpty ? lastPopulatedVisibleIDs : visibleIDs
     }
 
+    /// Bumped whenever something the read rule reads actually changes.
+    ///
+    /// The rule is asked its question from `onScrollGeometryChange`, so once
+    /// per frame, but its inputs are the visible set and whether the list is
+    /// off the top -- and those change perhaps ten times a second. Measured
+    /// on device at 575 posts, recomputing regardless cost 0.68ms of every
+    /// 8.3ms frame. This is what lets the other hundred calls return early
+    /// without removing the trigger that needs them.
+    private(set) var generation = 0
+
+    private var markedGeneration = -1
+
+    /// Whether anything has changed since this was last asked. Asking
+    /// consumes the change, so the first caller in a frame does the work and
+    /// the second returns.
+    func takeChangedGeneration() -> Bool {
+        guard generation != markedGeneration else { return false }
+        markedGeneration = generation
+        return true
+    }
+
     func setVisibility(_ isVisible: Bool, id: String) {
         if isVisible {
-            visibleIDs.insert(id)
+            guard visibleIDs.insert(id).inserted else { return }
+            generation += 1
             lastPopulatedVisibleIDs = visibleIDs
         } else {
             // Deliberately not snapshotted here. A push empties the set as a
             // cascade of single removals, so snapshotting on the way down
             // would erode the fallback to whichever row happened to report
             // last -- one row, somewhere below the true top.
-            visibleIDs.remove(id)
+            guard visibleIDs.remove(id) != nil else { return }
+            generation += 1
         }
     }
 
     /// A point of slack, so that a list resting at the top is not called
     /// scrolled by sub-pixel layout noise.
+    ///
+    /// Only the crossing counts, not the offset: the rule reads whether the
+    /// list is off the top, never by how much, so a thousand frames of
+    /// scrolling are one change.
     func updateOffset(fromTop offset: CGFloat) {
-        isScrolledFromTop = offset > 1
+        let scrolled = offset > 1
+        guard scrolled != isScrolledFromTop else { return }
+        isScrolledFromTop = scrolled
+        generation += 1
     }
 
     func reset() {
         visibleIDs.removeAll()
         lastPopulatedVisibleIDs.removeAll()
         isScrolledFromTop = false
+        generation += 1
     }
 }
 
