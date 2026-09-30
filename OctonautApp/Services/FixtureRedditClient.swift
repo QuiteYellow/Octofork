@@ -4,6 +4,11 @@ import Foundation
 /// It never creates a URLSession and therefore cannot contact Reddit.
 actor FixtureRedditClient: RedditClient {
     private let listingData: Data?
+    /// One listing per request, in order, so paging can be exercised. The
+    /// last page is repeated once they run out; a fixture that answered every
+    /// request with the same page could only ever test one fetch, because the
+    /// cursor it hands back never moves.
+    private let listingPages: [Data]
     private let listingsByDestination: [FeedDestination: Data]
     private let delaysByDestination: [FeedDestination: Duration]
     private let postData: Data?
@@ -24,6 +29,7 @@ actor FixtureRedditClient: RedditClient {
 
     init(
         listingData: Data? = nil,
+        listingPages: [Data] = [],
         listingsByDestination: [FeedDestination: Data] = [:],
         delaysByDestination: [FeedDestination: Duration] = [:],
         postData: Data? = nil,
@@ -38,6 +44,7 @@ actor FixtureRedditClient: RedditClient {
         actionResult: ActionResult = ActionResult(succeeded: true)
     ) {
         self.listingData = listingData
+        self.listingPages = listingPages
         self.listingsByDestination = listingsByDestination
         self.delaysByDestination = delaysByDestination
         self.postData = postData
@@ -59,6 +66,7 @@ actor FixtureRedditClient: RedditClient {
             return try Data(contentsOf: url, options: [.mappedIfSafe])
         }
         self.listingData = try read("listing.json")
+        self.listingPages = []
         self.listingsByDestination = [:]
         self.delaysByDestination = [:]
         self.postData = try read("post.json")
@@ -79,7 +87,14 @@ actor FixtureRedditClient: RedditClient {
         if let listingDelay = delaysByDestination[request.feed.destination] ?? listingDelay {
             try await Task.sleep(for: listingDelay)
         }
-        guard let listingData = listingsByDestination[request.feed.destination] ?? listingData else { return Listing(items: []) }
+        if let page = listingsByDestination[request.feed.destination] {
+            return try RedditJSONCodec.decodePosts(page)
+        }
+        if !listingPages.isEmpty {
+            return try RedditJSONCodec.decodePosts(
+                listingPages[min(listingRequestCount - 1, listingPages.count - 1)])
+        }
+        guard let listingData else { return Listing(items: []) }
         return try RedditJSONCodec.decodePosts(listingData)
     }
 

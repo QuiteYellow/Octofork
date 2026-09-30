@@ -95,7 +95,7 @@ struct MacFeedListView: View {
 
                     if !store.posts.isEmpty {
                         Button("Load More") {
-                            Task { await store.loadMorePosts(for: descriptor) }
+                            Task { await store.loadMorePostsUntilSomethingNewIsVisible(for: descriptor) }
                         }
                         .frame(maxWidth: .infinity)
                         .buttonStyle(.plain)

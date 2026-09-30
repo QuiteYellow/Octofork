@@ -437,10 +437,20 @@ struct FeedView: View {
                             .id(post.id)
                             .onAppear {
                                 preloadMedia(after: index)
-                                if index >= visiblePosts.count - 2 { Task { await store.loadMorePosts(for: descriptor) } }
+                                // Until something new is visible, not just
+                                // one page: a page whose posts are all read,
+                                // all cleared, or all duplicates renders no
+                                // row, and this `onAppear` is the only thing
+                                // that asks for the next one.
+                                if index >= visiblePosts.count - 2 {
+                                    Task {
+                                        await store.loadMorePostsUntilSomethingNewIsVisible(
+                                            for: descriptor)
+                                    }
+                                }
                             }
                         }
-                        if store.feedState == .loading, !visiblePosts.isEmpty {
+                        if store.isPagingForNewPosts, !visiblePosts.isEmpty {
                             HStack { Spacer(); ProgressView("Loading more…"); Spacer() }.padding()
                                 .listRowSeparator(.hidden)
                         }

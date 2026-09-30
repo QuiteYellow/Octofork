@@ -52,10 +52,10 @@ final class DomainTests: XCTestCase {
         let client = FixtureRedditClient(listingData: data)
         let store = OctonautFeatureStore(reddit: client)
         await store.refreshPosts(for: .popular)
-        XCTAssertEqual(store.galleryPageCursor(for: .popular), "next-page")
-        XCTAssertNil(store.galleryPageCursor(for: .home))
+        XCTAssertEqual(store.nextPageCursor(for: .popular), "next-page")
+        XCTAssertNil(store.nextPageCursor(for: .home))
         await store.loadMorePosts(for: .popular)
-        XCTAssertNil(store.galleryPageCursor(for: .popular))
+        XCTAssertNil(store.nextPageCursor(for: .popular))
         let requests = await client.listingRequests()
         XCTAssertEqual(requests, 2)
     }
@@ -2191,6 +2191,84 @@ extension DomainTests {
         // forever through a listing that has ended.
         let requests = await client.listingRequests()
         XCTAssertGreaterThan(requests, 1)
+    }
+
+    /// The same trap, one row further along: the feed is not empty, so it
+    /// keeps asking, and a page whose posts are all read adds nothing for the
+    /// reader to scroll to. The row whose appearance asks for the next page
+    /// never renders, so a single fetch per ask leaves the feed stuck for
+    /// good -- returning to it restores the same tail from the cache.
+    @MainActor
+    func testAPageThatAddsNoVisibleRowKeepsPaging() async throws {
+        let persistence = InMemoryPersistenceStore()
+        for id in ["b", "c"] { try await persistence.markPostSeen(id) }
+        let client = FixtureRedditClient(listingPages: [
+            Self.listingJSON(ids: ["a"], after: "t3_1"),
+            Self.listingJSON(ids: ["b"], after: "t3_2"),
+            Self.listingJSON(ids: ["c"], after: "t3_3"),
+            Self.listingJSON(ids: ["d"], after: "t3_4"),
+        ])
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a"])
+
+        await store.loadMorePostsUntilSomethingNewIsVisible(for: .popular)
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "d"])
+        // Everything fetched is kept -- the hidden posts are in the store,
+        // they are only not drawn.
+        XCTAssertEqual(store.posts.map(\.id), ["a", "b", "c", "d"])
+        let requests = await client.listingRequests()
+        XCTAssertEqual(requests, 4)
+    }
+
+    /// And it gives up rather than running away down a listing where every
+    /// post has been read.
+    @MainActor
+    func testPagingForAVisibleRowGivesUpOnceTheBudgetIsSpent() async throws {
+        let ids = (0..<12).map { "p\($0)" }
+        let persistence = InMemoryPersistenceStore()
+        for id in ids.dropFirst() { try await persistence.markPostSeen(id) }
+        let client = FixtureRedditClient(
+            listingPages: ids.enumerated().map { Self.listingJSON(ids: [$1], after: "t3_\($0)") })
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        await store.loadMorePostsUntilSomethingNewIsVisible(for: .popular)
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["p0"])
+        // The first refresh, then the budget: one ordinary page and five
+        // larger ones. The listing has not ended, so this is the bound doing
+        // the stopping rather than Reddit.
+        let requests = await client.listingRequests()
+        XCTAssertEqual(requests, 7)
+        XCTAssertNotNil(store.nextPageCursor(for: .popular))
+    }
+
+    /// Catching up asks for bigger pages than an ordinary load-more, because
+    /// almost everything in them is going to be hidden on arrival.
+    @MainActor
+    func testCatchingUpAsksForTheLargestPageRedditWillGive() async throws {
+        let persistence = InMemoryPersistenceStore()
+        for id in ["b", "c"] { try await persistence.markPostSeen(id) }
+        let client = FixtureRedditClient(listingPages: [
+            Self.listingJSON(ids: ["a"], after: "t3_1"),
+            Self.listingJSON(ids: ["b"], after: "t3_2"),
+            Self.listingJSON(ids: ["c"], after: "t3_3"),
+            Self.listingJSON(ids: ["d"], after: "t3_4"),
+        ])
+        let store = OctonautFeatureStore(
+            reddit: client, settings: Self.settings(hideSeen: true), persistence: persistence)
+
+        await store.refreshPosts(for: .popular)
+        await store.loadMorePostsUntilSomethingNewIsVisible(for: .popular)
+
+        XCTAssertEqual(store.visiblePosts.map(\.id), ["a", "d"])
+        let last = await client.lastListingRequest
+        XCTAssertEqual(last?.limit, 100)
     }
 
     /// The toggle is a predicate over posts already in hand. It used to

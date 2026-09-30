@@ -399,7 +399,7 @@ struct GalleryView: View {
 
     private var nextPageCursor: String? {
         switch source {
-        case .feed(let descriptor): store.galleryPageCursor(for: descriptor)
+        case .feed(let descriptor): store.nextPageCursor(for: descriptor)
         case .userSection: sectionNextPage
         }
     }

@@ -1148,6 +1148,16 @@ final class OctonautFeatureStore {
     ]
     var comments = CommentCardModel.samples
     var feedState: OctonautLoadState = .loaded
+    /// Whether the feed is paging on to find a post the reader has not read.
+    ///
+    /// Separate from `feedState` because the feed is drawn inside an
+    /// `OctonautStateView` keyed on that: setting it to `.loading` to show
+    /// the row at the end of the list would replace the whole list with a
+    /// spinner, taking away the posts the reader is looking at. Which is why
+    /// nothing reaches that row as it stands: every assignment of `.loading`
+    /// empties `posts` in the same turn, so the row's own condition --
+    /// loading with posts still on screen -- cannot hold.
+    private(set) var isPagingForNewPosts = false
     var communitiesState: OctonautLoadState = .loaded
     var inboxState: OctonautLoadState = .loaded
     var searchText = ""
@@ -1986,14 +1996,17 @@ final class OctonautFeatureStore {
         }
     }
 
-    func galleryPageCursor(for descriptor: FeedDescriptorModel) -> String? {
+    func nextPageCursor(for descriptor: FeedDescriptorModel) -> String? {
         guard loadedFeed == descriptor else { return nil }
         return nextPage
     }
 
     @ObservationIgnored private var isLoadingNextPage = false
 
-    func loadMorePosts(for descriptor: FeedDescriptorModel = .popular) async {
+    func loadMorePosts(
+        for descriptor: FeedDescriptorModel = .popular,
+        pageLimits: [Int]? = nil
+    ) async {
         if screenshotMode { return }
         guard feedState == .loaded || feedState == .empty, !isLoadingNextPage else { return }
         let requestID = feedRequestID
@@ -2029,7 +2042,8 @@ final class OctonautFeatureStore {
                 after: nextPage,
                 accountScope: selectedAccountID.map(AccountScope.account) ?? .anonymous,
                 account: selectedAccountID,
-                responseCachePolicy: .useCache
+                responseCachePolicy: .useCache,
+                limits: pageLimits ?? Self.filteredPageLimits
             )
             guard feedRequestID == requestID, !Task.isCancelled, loadedFeed == descriptor, self.nextPage == nextPage, isCurrentAccount(selectedAccountID, generation: selectedGeneration)
             else { return }
@@ -2080,6 +2094,12 @@ final class OctonautFeatureStore {
     /// after an empty one, so three in total. Reddit caps a listing at 100.
     private static let filteredPageLimits = [35, 60, 100]
 
+    /// The page size asked for while catching up past posts the reader has
+    /// already read. Nearly all of it will be hidden the moment it is drawn,
+    /// so the round trip is the cost that matters -- take as much as Reddit
+    /// will give at once rather than paying a request per 35.
+    private static let catchUpPageLimits = [100]
+
     /// Fetches until a page survives filtering. A page can be filtered away
     /// entirely -- easiest to do with "hide seen" on -- and an empty result
     /// used to end the feed for good, because the row whose appearance asks
@@ -2091,10 +2111,11 @@ final class OctonautFeatureStore {
         after: String?,
         accountScope: AccountScope,
         account: AccountID?,
-        responseCachePolicy: ListingRequest.ResponseCachePolicy
+        responseCachePolicy: ListingRequest.ResponseCachePolicy,
+        limits: [Int]? = nil
     ) async throws -> FilteredPage {
         var page = FilteredPage(after: after)
-        for limit in Self.filteredPageLimits {
+        for limit in limits ?? Self.filteredPageLimits {
             try Task.checkCancellation()
             let listing = try await reddit.listing(
                 ListingRequest(
@@ -2543,15 +2564,66 @@ final class OctonautFeatureStore {
     /// filter had, relocated. FUN-LIST-004's two extra pages bound it, and a
     /// listing that has ended stops it outright.
     func loadMorePostsUntilSomethingIsVisible(for descriptor: FeedDescriptorModel) async {
+        guard visiblePosts.isEmpty, !posts.isEmpty else { return }
+        await loadMorePostsUntilSomethingNewIsVisible(for: descriptor)
+    }
+
+    /// Pages until the feed gains a row. This is what the rows near the end
+    /// of the list ask for.
+    ///
+    /// A page can arrive in full and still put nothing on screen. Every post
+    /// in it is already read and hide-seen is on; every post in it was
+    /// cleared by the read-posts control, which hides regardless of that
+    /// setting; or every post is a duplicate of one the feed already holds,
+    /// which a listing sorted by anything live hands back routinely. In all
+    /// three the store looks healthy afterwards -- `posts` grew or the cursor
+    /// moved, the state is `.loaded` -- while the list is unchanged, so the
+    /// `onAppear` that asks for the next page never fires again and the feed
+    /// is finished for good. Leaving and coming back does not clear it: the
+    /// cache restores the same tail, and the empty-feed loop above does not
+    /// apply because the feed is not empty. Paging on from the gallery does,
+    /// which is the shape of the bug as reported -- the gallery draws
+    /// `posts`, not `visiblePosts`, and pages from a cursor rather than a row.
+    ///
+    /// FUN-LIST-004 counts hide-seen among the filters a wiped-out page must
+    /// be retried for, and bounds that at two further pages. That bound
+    /// belongs to the fetch-time filters it was written for and does not
+    /// govern this. Measured on device: a refresh taken after reading around
+    /// 150 posts clears `postsKeptVisibleWhileReading`, so everything just
+    /// read hides at once and four consecutive pages of 35 came back with
+    /// nothing visible in them. How far the feed has to page is whatever the
+    /// reader has read since the listing last moved on, which no small
+    /// constant bounds -- so the budget here is large enough to cross a
+    /// normal reading session, and the pages asked for are the biggest
+    /// Reddit will give, because nearly all of what arrives will be hidden.
+    ///
+    /// What stops it is the listing itself: a cursor Reddit hands back
+    /// unchanged ends it outright, on the first attempt as readily as the
+    /// last.
+    func loadMorePostsUntilSomethingNewIsVisible(for descriptor: FeedDescriptorModel) async {
+        let countBefore = visiblePosts.count
+        guard nextPage != nil else { return }
+        isPagingForNewPosts = true
+        defer { isPagingForNewPosts = false }
         var attempts = 0
-        while visiblePosts.isEmpty, !posts.isEmpty, nextPage != nil, attempts < 2 {
+        while attempts < Self.catchUpPageBudget, nextPage != nil, visiblePosts.count == countBefore {
             attempts += 1
             let cursorBefore = nextPage
-            await loadMorePosts(for: descriptor)
+            // The first ask is an ordinary page: usually it lands something
+            // and nothing more is needed. Only once one has been swallowed
+            // whole is this a catch-up, and worth the larger request.
+            await loadMorePosts(
+                for: descriptor, pageLimits: attempts == 1 ? nil : Self.catchUpPageLimits)
+            // Nothing moved: the request was dropped or the listing ended.
+            // Asking again would only repeat it.
             if nextPage == cursorBefore { return }
         }
     }
 
+    /// One ordinary page, then five of a hundred: around five hundred posts
+    /// already read, which covers a long session's reading without turning
+    /// one flick of the thumb into an unbounded run of requests.
+    private static let catchUpPageBudget = 6
 
     /// Flips the flag, for the explicit "Mark Seen"/"Mark Unseen" actions.
     func markSeen(postID: String) {
