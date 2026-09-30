@@ -52,6 +52,13 @@ targets:
     info:
       path: OctonautApp/Info.plist
       properties:
+        # Without this, iOS holds the app to 60fps on a ProMotion iPhone.
+        # Measured with a CADisplayLink on a 15 Pro Max: the display asked for
+        # 80Hz and the app delivered 58-68 frames a second against an expected
+        # 80, while never once being offered a 120Hz cadence. A renderer fixed
+        # at 60 against a panel that varies its rate is what reads as jitter,
+        # and it is unaffected by anything done to the work per frame.
+        CADisableMinimumFrameDurationOnPhone: true
         CFBundleURLTypes:
           - CFBundleURLName: com.leddytech.octonaut
             CFBundleURLSchemes:
