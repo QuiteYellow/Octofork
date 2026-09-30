@@ -43,7 +43,7 @@ struct PostDetailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 OctonautPostRow(
                     post: currentPost,
                     bodyLineLimit: nil,
@@ -105,19 +105,21 @@ struct PostDetailView: View {
                     )
                 }
                 if dependencies.settings.showCommentSummaries,
-                   store.detailState == .loaded,
-                   SummaryEligibility.comments(summaryComments) {
-                    SummaryCardView(
-                        title: "Comments Summary",
-                        input: .comments(
-                            CommentSummaryInput(postID: currentPost.id, comments: summaryComments)
-                        ),
-                        intelligence: dependencies.intelligence,
-                        cache: dependencies.summaryCache,
-                        modelFamily: dependencies.summaryCacheModelFamily,
-                        automatic: dependencies.settings.automaticCommentSummaries,
-                        useFallback: dependencies.settings.keyExcerptsFallback
-                    )
+                   store.detailState == .loaded {
+                    let comments = summaryComments
+                    if SummaryEligibility.comments(comments) {
+                        SummaryCardView(
+                            title: "Comments Summary",
+                            input: .comments(
+                                CommentSummaryInput(postID: currentPost.id, comments: comments)
+                            ),
+                            intelligence: dependencies.intelligence,
+                            cache: dependencies.summaryCache,
+                            modelFamily: dependencies.summaryCacheModelFamily,
+                            automatic: dependencies.settings.automaticCommentSummaries,
+                            useFallback: dependencies.settings.keyExcerptsFallback
+                        )
+                    }
                 }
 
                 HStack {
@@ -149,7 +151,8 @@ struct PostDetailView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 4)
 
-                ForEach(flattenedComments) { comment in
+                let comments = flattenedComments
+                ForEach(comments) { comment in
                     if comment.isMoreNode {
                         moreCommentsRow(comment)
                     } else {
@@ -166,7 +169,7 @@ struct PostDetailView: View {
                             })
                     }
                 }
-                if flattenedComments.isEmpty {
+                if comments.isEmpty {
                     VStack(spacing: 12) {
                         ContentUnavailableView(
                             "No comments", systemImage: "bubble.left.and.bubble.right",

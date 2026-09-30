@@ -245,7 +245,7 @@ private struct MacPostMediaCard: View {
                     .background(.quaternary, in: Capsule())
             }
 
-            let preview = RedditPostMarkdown.previewText(from: post.body)
+            let preview = post.bodyPreview
             if !preview.isEmpty {
                 Text(preview)
                     .font(.subheadline)

@@ -15,9 +15,10 @@ private struct OctonautExportableMedia: Identifiable {
 private struct OctonautFileExporter: UIViewControllerRepresentable {
     let fileURL: URL
     let onSaved: () -> Void
+    var onDismiss: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSaved: onSaved)
+        Coordinator(onSaved: onSaved, onDismiss: onDismiss)
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
@@ -30,14 +31,21 @@ private struct OctonautFileExporter: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onSaved: () -> Void
+        let onDismiss: (() -> Void)?
 
-        init(onSaved: @escaping () -> Void) {
+        init(onSaved: @escaping () -> Void, onDismiss: (() -> Void)? = nil) {
             self.onSaved = onSaved
+            self.onDismiss = onDismiss
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard !urls.isEmpty else { return }
             onSaved()
+            onDismiss?()
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onDismiss?()
         }
     }
 }
@@ -1466,6 +1474,10 @@ struct OctonautMediaViewer: View {
         .sheet(item: $fileToExport) { media in
             OctonautFileExporter(fileURL: media.url) {
                 saveConfirmation = "The media was saved to Files."
+            } onDismiss: {
+                if !isVideo {
+                    try? FileManager.default.removeItem(at: media.url)
+                }
             }
         }
         .alert("Could not save media", isPresented: Binding(get: { saveError != nil }, set: { if !$0 { saveError = nil } })) {
@@ -1671,20 +1683,38 @@ struct OctonautMediaViewer: View {
         showOverlay = true
         Task {
             defer { isSaving = false }
+            var temporaryDownloadedURL: URL?
             do {
                 let localURL = try await prepareMediaForSaving(sourceURL)
-                guard !Task.isCancelled else { return }
+                if !isVideo {
+                    temporaryDownloadedURL = localURL
+                }
+                guard !Task.isCancelled else {
+                    if let temporaryDownloadedURL {
+                        try? FileManager.default.removeItem(at: temporaryDownloadedURL)
+                    }
+                    return
+                }
 
                 switch destination {
                 case .photos:
                     try await saveCoordinator.saveToPhotos(fileURL: localURL, isVideo: isVideo)
                     saveConfirmation = isVideo ? "The video was added to Photos." : "The image was added to Photos."
+                    if let temporaryDownloadedURL {
+                        try? FileManager.default.removeItem(at: temporaryDownloadedURL)
+                    }
                 case .files:
                     fileToExport = OctonautExportableMedia(url: localURL)
                 }
             } catch is CancellationError {
+                if let temporaryDownloadedURL {
+                    try? FileManager.default.removeItem(at: temporaryDownloadedURL)
+                }
                 return
             } catch {
+                if destination == .photos, let temporaryDownloadedURL {
+                    try? FileManager.default.removeItem(at: temporaryDownloadedURL)
+                }
                 saveError = error.localizedDescription
             }
         }
@@ -1698,20 +1728,33 @@ struct OctonautMediaViewer: View {
         showOverlay = true
         Task {
             defer { isSaving = false }
+            var downloadedURLs: [URL] = []
             do {
                 var localURLs: [URL] = []
                 localURLs.reserveCapacity(mediaURLs.count)
                 for sourceURL in mediaURLs {
-                    localURLs.append(try await prepareMediaForSaving(sourceURL))
+                    let local = try await prepareMediaForSaving(sourceURL)
+                    localURLs.append(local)
+                    if !isVideo {
+                        downloadedURLs.append(local)
+                    }
                 }
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    for url in downloadedURLs { try? FileManager.default.removeItem(at: url) }
+                    return
+                }
 
                 try await saveCoordinator.saveToPhotos(fileURLs: localURLs, isVideo: isVideo)
                 let mediaType = isVideo ? "videos" : "images"
                 saveConfirmation = "All \(localURLs.count) \(mediaType) were added to Photos."
+                for url in downloadedURLs {
+                    try? FileManager.default.removeItem(at: url)
+                }
             } catch is CancellationError {
+                for url in downloadedURLs { try? FileManager.default.removeItem(at: url) }
                 return
             } catch {
+                for url in downloadedURLs { try? FileManager.default.removeItem(at: url) }
                 saveError = error.localizedDescription
             }
         }

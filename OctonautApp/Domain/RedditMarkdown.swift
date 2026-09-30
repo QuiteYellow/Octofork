@@ -18,9 +18,11 @@ enum RedditMarkdownBlock: Equatable {
 
 struct RedditMarkdownView: View {
     let source: String
+    private let blocks: [RedditMarkdownBlock]
 
-    private var blocks: [RedditMarkdownBlock] {
-        RedditPostMarkdown.blocks(from: source)
+    init(source: String) {
+        self.source = source
+        self.blocks = RedditPostMarkdown.blocks(from: source)
     }
 
     var body: some View {
@@ -262,16 +264,10 @@ enum RedditPostMarkdown {
             appendText(source, to: &blocks)
             return
         }
-        guard let expression = try? NSRegularExpression(
-            pattern: #"!?\[([^\]\r\n]*)\]\((https://[^)\s]+)\)|https://[^\s<>()]+"#
-        ) else {
-            appendText(source, to: &blocks)
-            return
-        }
 
         let sourceRange = NSRange(source.startIndex..., in: source)
         var cursor = source.startIndex
-        for match in expression.matches(in: source, range: sourceRange) {
+        for match in imageLinkRegex.matches(in: source, range: sourceRange) {
             guard let matchRange = Range(match.range, in: source) else { continue }
             let rawURL: String
             let altText: String?
@@ -313,6 +309,54 @@ enum RedditPostMarkdown {
     }
 
     private static let trailingURLPunctuation = CharacterSet(charactersIn: ".,;:!?")
+
+    private static let imageLinkRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(
+                pattern: #"!?\[([^\]\r\n]*)\]\((https://[^)\s]+)\)|https://[^\s<>()]+"#
+            )
+        } catch {
+            fatalError("Invalid imageLinkRegex pattern: \(error)")
+        }
+    }()
+
+    private static let shouldJoinLinkRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(
+                pattern: #"(?:\[[^\]\r\n]+\]\([^)]+\)|https?://[^\s<>]+)$"#
+            )
+        } catch {
+            fatalError("Invalid shouldJoinLinkRegex pattern: \(error)")
+        }
+    }()
+
+    private static let atxTrailingHeadingRegex: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(pattern: #"[ \t]+#+[ \t]*$"#)
+        } catch {
+            fatalError("Invalid atxTrailingHeadingRegex pattern: \(error)")
+        }
+    }()
+
+    private static let linkSpacingRegex1: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(
+                pattern: #"(\[[^\]\r\n]+\]\([^)]+\))[\r\n]*(?=[\p{L}\p{N}])"#
+            )
+        } catch {
+            fatalError("Invalid linkSpacingRegex1 pattern: \(error)")
+        }
+    }()
+
+    private static let linkSpacingRegex2: NSRegularExpression = {
+        do {
+            return try NSRegularExpression(
+                pattern: #"(https?://[^\s<>]+)[\r\n]+(?=[\p{L}\p{N}])"#
+            )
+        } catch {
+            fatalError("Invalid linkSpacingRegex2 pattern: \(error)")
+        }
+    }()
 
     private static func redditImageURL(from source: String) -> URL? {
         let decoded = source.replacingOccurrences(of: "&amp;", with: "&")
@@ -494,11 +538,8 @@ enum RedditPostMarkdown {
 
     private static func shouldJoinLinkLine(_ line: String, to followingLine: String) -> Bool {
         guard let nextCharacter = followingLine.first,
-              nextCharacter.isLetter || nextCharacter.isNumber,
-              let expression = try? NSRegularExpression(
-                pattern: #"(?:\[[^\]\r\n]+\]\([^)]+\)|https?://[^\s<>]+)$"#
-              ) else { return false }
-        return expression.firstMatch(
+              nextCharacter.isLetter || nextCharacter.isNumber else { return false }
+        return shouldJoinLinkRegex.firstMatch(
             in: line,
             range: NSRange(line.startIndex..., in: line)
         ) != nil
@@ -549,10 +590,11 @@ enum RedditPostMarkdown {
         let remainder = content.dropFirst(level)
         guard remainder.first == " " || remainder.first == "\t" else { return nil }
         var text = String(remainder.drop(while: { $0 == " " || $0 == "\t" }))
-        text = text.replacingOccurrences(
-            of: #"[ \t]+#+[ \t]*$"#,
-            with: "",
-            options: .regularExpression
+        let range = NSRange(text.startIndex..., in: text)
+        text = atxTrailingHeadingRegex.stringByReplacingMatches(
+            in: text,
+            range: range,
+            withTemplate: ""
         )
         return (level, text)
     }
@@ -566,21 +608,18 @@ enum RedditPostMarkdown {
     }
 
     private static func insertingMissingLinkSpacing(in source: String) -> String {
-        let replacements = [
-            (#"(\[[^\]\r\n]+\]\([^)]+\))[\r\n]*(?=[\p{L}\p{N}])"#, "$1 "),
-            (#"(https?://[^\s<>]+)[\r\n]+(?=[\p{L}\p{N}])"#, "$1 "),
-        ]
-
-        return replacements.reduce(source) { result, replacement in
-            guard let expression = try? NSRegularExpression(pattern: replacement.0) else {
-                return result
-            }
-            return expression.stringByReplacingMatches(
-                in: result,
-                range: NSRange(result.startIndex..., in: result),
-                withTemplate: replacement.1
-            )
-        }
+        let range1 = NSRange(source.startIndex..., in: source)
+        let pass1 = linkSpacingRegex1.stringByReplacingMatches(
+            in: source,
+            range: range1,
+            withTemplate: "$1 "
+        )
+        let range2 = NSRange(pass1.startIndex..., in: pass1)
+        return linkSpacingRegex2.stringByReplacingMatches(
+            in: pass1,
+            range: range2,
+            withTemplate: "$1 "
+        )
     }
 
     private static func tableCells(in line: String) -> [String]? {
