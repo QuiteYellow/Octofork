@@ -373,7 +373,7 @@ private struct CommentComposerTarget: Identifiable {
 
 @MainActor
 struct GalleryView: View {
-    let descriptor: FeedDescriptorModel
+    let source: GallerySource
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
 
@@ -382,52 +382,208 @@ struct GalleryView: View {
     /// A per-visit override of the blur preferences, so the toolbar button can
     /// unblur this grid without changing the saved setting.
     @State private var revealsSensitiveMedia = false
+    @State private var networkStatus = OctonautNetworkStatus.shared
+    @State private var containerWidth: CGFloat = 0
+    /// The laid-out columns, rebuilt only when something that can change them
+    /// changes -- not on every body evaluation.
+    @State private var columns: [[GalleryMediaItem]] = []
+    /// The column each tile was given, kept so it keeps it.
+    @State private var columnByItem: [String: Int] = [:]
+    @State private var laidOutColumnCount = 0
+    /// A profile section keeps its own rows: Saved and Upvoted are fetched
+    /// through the user endpoint and never land in `store.posts`.
+    @State private var sectionPosts: [PostCardModel] = []
+    @State private var sectionNextPage: String?
+    @State private var sectionState: OctonautLoadState = .idle
+    @State private var isLoadingMore = false
 
     private var blursSensitiveMedia: Bool {
         dependencies.settings.blurNSFWMedia || dependencies.settings.blurSpoilers
     }
 
     private var items: [GalleryMediaItem] {
-        GalleryMediaItem.items(from: store.posts.filter {
-            descriptor.kind != .community || $0.community.caseInsensitiveCompare(descriptor.name) == .orderedSame
-        })
+        switch source {
+        case .feed(let descriptor):
+            GalleryMediaItem.items(from: store.posts.filter {
+                descriptor.kind != .community
+                    || $0.community.caseInsensitiveCompare(descriptor.name) == .orderedSame
+            })
+        case .userSection:
+            GalleryMediaItem.items(from: sectionPosts)
+        }
+    }
+
+    private var loadState: OctonautLoadState {
+        switch source {
+        case .feed: store.feedState
+        case .userSection: sectionState
+        }
+    }
+
+    private var nextPageCursor: String? {
+        switch source {
+        case .feed(let descriptor): store.galleryPageCursor(for: descriptor)
+        case .userSection: sectionNextPage
+        }
+    }
+
+    private func load(forceRefresh: Bool) async {
+        switch source {
+        case .feed(let descriptor):
+            await store.refreshPosts(for: descriptor, forceRefresh: forceRefresh)
+        case .userSection(let username, let section):
+            if sectionPosts.isEmpty { sectionState = .loading }
+            do {
+                let page = try await store.fetchUserSection(
+                    section, username: username, forceRefresh: forceRefresh)
+                sectionPosts = page.posts
+                sectionNextPage = page.nextPage
+                sectionState = page.posts.isEmpty ? .empty : .loaded
+            } catch {
+                sectionState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func loadMore() async {
+        switch source {
+        case .feed(let descriptor):
+            await store.loadMorePosts(for: descriptor)
+        case .userSection(let username, let section):
+            guard let after = sectionNextPage, !isLoadingMore else { return }
+            isLoadingMore = true
+            defer { isLoadingMore = false }
+            do {
+                let page = try await store.fetchUserSection(
+                    section, username: username, after: after)
+                // The cursor can have moved on while this was in flight.
+                guard !Task.isCancelled, sectionNextPage == after else { return }
+                let known = Set(sectionPosts.map(\.id))
+                sectionPosts.append(contentsOf: page.posts.filter { !known.contains($0.id) })
+                sectionNextPage = page.nextPage
+            } catch is CancellationError {
+                // Emphatically not the end of the listing.
+                //
+                // This is triggered from a `.task(id:)` on the row below the
+                // grid, and that row leaves the lazy stack's realised range the
+                // moment a page is appended above it -- so SwiftUI cancels the
+                // task as a matter of course. Treating that as a failure and
+                // dropping the cursor stopped Saved and Upvoted dead after the
+                // first page, under a message saying there was nothing more.
+                return
+            } catch {
+                // A real failure: keep what arrived and stop paging until the
+                // reader pulls to refresh.
+                sectionNextPage = nil
+            }
+        }
+    }
+
+    /// Whether video tiles may play where they sit, which is the reader's
+    /// autoplay setting answered for this connection -- the same question the
+    /// feed rows ask.
+    private var autoplaysInPlace: Bool {
+        dependencies.settings.autoplayVideo.shouldAutoplay(
+            isConnectedViaWiFi: networkStatus.isConnectedViaWiFi)
+    }
+
+    private var columnCount: Int {
+        let minimumTileWidth: CGFloat = 170
+        guard containerWidth > 0 else { return 2 }
+        return max(2, Int((containerWidth - Self.gridPadding + Self.tileSpacing)
+            / (minimumTileWidth + Self.tileSpacing)))
+    }
+
+    private static let tileSpacing: CGFloat = 4
+    private static let gridPadding: CGFloat = 8
+
+    /// Places any tile that does not yet have a column, and leaves every tile
+    /// that does exactly where it is.
+    ///
+    /// Two separate things were wrong before. The columns were recomputed from
+    /// scratch inside `body`, so a tile already on screen could be handed a
+    /// different column by the next pass -- not resized, *relocated*, taking
+    /// everything below it in both columns with it. And the inputs it was
+    /// recomputed from all move while the reader is looking: the list grows
+    /// with pagination, the width arrives late, and ratios firm up as images
+    /// are measured. Logging it on device showed 13 to 24 tiles changing
+    /// column on every single pass.
+    ///
+    /// So placement is a decision made once per tile and then kept. New tiles
+    /// are still placed shortest-column-first, against heights accumulated
+    /// from the tiles already there, which is what keeps the columns level.
+    private func rebuildColumns() {
+        let count = columnCount
+        guard containerWidth > 0, count > 0 else { return }
+        let tileWidth = max(
+            1,
+            (containerWidth - Self.gridPadding - Self.tileSpacing * CGFloat(count - 1)) / CGFloat(count))
+
+        var assignment = columnByItem
+        // A different number of columns is a different layout; nothing can be
+        // carried over.
+        if count != laidOutColumnCount { assignment.removeAll() }
+
+        var built = Array(repeating: [GalleryMediaItem](), count: count)
+        var heights = Array(repeating: CGFloat(0), count: count)
+        for item in items {
+            let column: Int
+            if let existing = assignment[item.id], existing < count {
+                column = existing
+            } else {
+                let shortest = heights.min() ?? 0
+                column = heights.indices.first { heights[$0] <= shortest + Self.tileSpacing } ?? 0
+                assignment[item.id] = column
+            }
+            built[column].append(item)
+            heights[column] += tileWidth / max(item.aspectRatio, 0.05) + Self.tileSpacing
+        }
+        columnByItem = assignment
+        laidOutColumnCount = count
+        columns = built
+    }
+
+    /// Changes when the grid genuinely has different tiles to show. Ratios
+    /// firming up deliberately do not appear here: a tile that learns its
+    /// shape should resize where it stands, never move.
+    private var itemsKey: String {
+        "\(items.count):\(items.first?.id ?? "")"
     }
 
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                HStack(alignment: .top, spacing: 4) {
-                    ForEach(0..<2) { column in
-                        LazyVStack(spacing: 4) {
-                            ForEach(Array(items.enumerated()).filter { $0.offset % 2 == column }.map(\.element)) { item in
+                HStack(alignment: .top, spacing: Self.tileSpacing) {
+                    ForEach(columns.indices, id: \.self) { column in
+                        LazyVStack(spacing: Self.tileSpacing) {
+                            ForEach(columns[column]) { item in
                                 GalleryMediaTile(
                                     item: item,
                                     blursNSFW: dependencies.settings.blurNSFWMedia && !revealsSensitiveMedia,
-                                    blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia
+                                    blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia,
+                                    autoplays: autoplaysInPlace
                                 ) { selectedItem = item }
                             }
                         }
                         .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.horizontal, 4)
+                .padding(.horizontal, Self.gridPadding / 2)
 
-                if case .failed(let message) = store.feedState {
+                if case .failed(let message) = loadState {
                     VStack(spacing: 12) {
                         Text(message).font(.callout).foregroundStyle(.secondary)
                         Button("Try again") {
-                            Task { await store.refreshPosts(for: descriptor, forceRefresh: true) }
+                            Task { await load(forceRefresh: true) }
                         }
                     }
                     .padding()
-                } else if store.feedState == .loading || store.feedState == .idle {
+                } else if loadState == .loading || loadState == .idle {
                     ProgressView("Loading gallery").padding()
-                } else if store.galleryPageCursor(for: descriptor) != nil {
+                } else if let cursor = nextPageCursor {
                     ProgressView("Loading more")
                         .padding()
-                        .task(id: store.galleryPageCursor(for: descriptor)) {
-                            await store.loadMorePosts(for: descriptor)
-                        }
+                        .task(id: cursor) { await loadMore() }
                 } else if items.isEmpty {
                     ContentUnavailableView("No media posts", systemImage: "photo.on.rectangle.angled",
                         description: Text("This feed has no displayable images or videos."))
@@ -438,7 +594,13 @@ struct GalleryView: View {
                 }
             }
         }
-        .navigationTitle("Gallery")
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            guard width != containerWidth else { return }
+            containerWidth = width
+            rebuildColumns()
+        }
+        .onChange(of: itemsKey) { _, _ in rebuildColumns() }
+        .navigationTitle(source.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -454,8 +616,8 @@ struct GalleryView: View {
                 }
             }
         }
-        .task { await store.refreshPosts(for: descriptor) }
-        .refreshable { await store.refreshPosts(for: descriptor, forceRefresh: true) }
+        .task { await load(forceRefresh: false) }
+        .refreshable { await load(forceRefresh: true) }
         .fullScreenCover(item: $selectedItem) { item in
             OctonautMediaViewer(post: item.post, initialPage: item.page, initiallyRevealed: revealsSensitiveMedia, onOpenPost: {
                 selectedItem = nil

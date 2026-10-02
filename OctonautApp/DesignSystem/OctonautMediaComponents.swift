@@ -1306,7 +1306,9 @@ struct OctonautSystemIsolatedVideoPlayer: UIViewControllerRepresentable {
 
 @MainActor
 @Observable
-private final class OctonautNetworkStatus {
+/// Not private: the gallery screen reads this to answer its own autoplay
+/// question, the same way a feed row does.
+final class OctonautNetworkStatus {
     static let shared = OctonautNetworkStatus()
 
     private(set) var isConnectedViaWiFi = false

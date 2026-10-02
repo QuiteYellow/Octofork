@@ -12,6 +12,25 @@ extension PostMedia {
         }
     }
 
+    /// Each gallery image's aspect ratio, positionally matched to
+        /// `galleryURLs`.
+    ///
+    /// `media_metadata` publishes `s.x`/`s.y` per image and the decoder has
+    /// always read them into `GalleryItem`, but only the URLs were passed on.
+    /// So every page of a gallery reached the grid shapeless and was laid out
+    /// at the default until its bytes arrived -- which is most of what was
+    /// moving tiles between columns.
+    fileprivate var galleryAspectRatios: [CGFloat?] {
+        if case .gallery(let items) = self {
+            return items.map { item in
+                guard let width = item.width, let height = item.height,
+                      width > 0, height > 0 else { return nil }
+                return CGFloat(width) / CGFloat(height)
+            }
+        }
+        return []
+    }
+
     fileprivate var galleryURLs: [URL] {
         if case .gallery(let items) = self { return items.map(\.url) }
         if let primaryURL { return [primaryURL] }
@@ -33,16 +52,27 @@ extension PostMedia {
         return nil
     }
 
-    /// The aspect ratio Reddit publishes alongside the video.
+    /// The aspect ratio Reddit publishes alongside the media.
     ///
     /// Worth carrying because it removes the only reason a row has to read
     /// the asset before it can lay out, and because an HLS playlist has no
     /// asset tracks to read: `loadTracks(withMediaType: .video)` returns
     /// nothing on one, so measuring it would letterbox every portrait video
     /// into 16:9.
+    ///
+    /// Images carry dimensions too -- `preview.images[].source` -- and the
+    /// decoder has always read them. Reading only the video case here is
+    /// what left the gallery grid sizing its tiles from whatever had finished
+    /// downloading.
     fileprivate var aspectRatio: CGFloat? {
-        guard case .video(_, _, _, _, let width, let height) = self,
-              let width, let height, width > 0, height > 0 else { return nil }
+        let dimensions: (Int?, Int?)
+        switch self {
+        case .video(_, _, _, _, let width, let height): dimensions = (width, height)
+        case .image(_, _, let width, let height, _): dimensions = (width, height)
+        default: return nil
+        }
+        guard let width = dimensions.0, let height = dimensions.1,
+              width > 0, height > 0 else { return nil }
         return CGFloat(width) / CGFloat(height)
     }
 }
@@ -82,6 +112,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
     var thumbnailURL: URL?
     var mediaKind: String
     var galleryURLs: [URL]
+    /// Positionally matched to `galleryURLs`; empty for non-gallery posts.
+    var galleryAspectRatios: [CGFloat?] = []
     var audioURL: URL?
     /// Reddit's smaller copies of each image, parallel to `galleryURLs`.
     ///
@@ -217,6 +249,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         thumbnailURL: URL? = nil,
         mediaKind: String = "none",
         galleryURLs: [URL] = [],
+        galleryAspectRatios: [CGFloat?] = [],
         audioURL: URL? = nil,
         imageVariants: [[ImageVariant]] = [],
         mediaAspectRatio: CGFloat? = nil,
@@ -246,6 +279,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         self.thumbnailURL = thumbnailURL
         self.mediaKind = mediaKind
         self.galleryURLs = galleryURLs
+        self.galleryAspectRatios = galleryAspectRatios
         self.audioURL = audioURL
         self.imageVariants = imageVariants
         self.mediaAspectRatio = mediaAspectRatio
@@ -278,6 +312,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
             thumbnailURL: post.media.thumbnailURL,
             mediaKind: post.media.kind,
             galleryURLs: post.media.galleryURLs,
+            galleryAspectRatios: post.media.galleryAspectRatios,
             audioURL: post.media.audioURL,
             imageVariants: post.media.imageVariants,
             mediaAspectRatio: post.media.aspectRatio
@@ -846,6 +881,7 @@ enum FeatureRoute: Hashable {
     case settings(SettingsDestination)
     case composer(ComposerKind)
     case gallery(FeedDescriptorModel)
+    case gallerySection(username: String, section: UserSection)
     case mediaURL(URL)
     case web(URL)
 }
