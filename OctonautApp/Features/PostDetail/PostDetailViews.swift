@@ -383,13 +383,6 @@ struct GalleryView: View {
     /// unblur this grid without changing the saved setting.
     @State private var revealsSensitiveMedia = false
     @State private var networkStatus = OctonautNetworkStatus.shared
-    @State private var containerWidth: CGFloat = 0
-    /// The laid-out columns, rebuilt only when something that can change them
-    /// changes -- not on every body evaluation.
-    @State private var columns: [[GalleryMediaItem]] = []
-    /// The column each tile was given, kept so it keeps it.
-    @State private var columnByItem: [String: Int] = [:]
-    @State private var laidOutColumnCount = 0
     /// A profile section keeps its own rows: Saved and Upvoted are fetched
     /// through the user endpoint and never land in `store.posts`.
     @State private var sectionPosts: [PostCardModel] = []
@@ -462,14 +455,13 @@ struct GalleryView: View {
                 sectionPosts.append(contentsOf: page.posts.filter { !known.contains($0.id) })
                 sectionNextPage = page.nextPage
             } catch is CancellationError {
-                // Emphatically not the end of the listing.
-                //
-                // This is triggered from a `.task(id:)` on the row below the
-                // grid, and that row leaves the lazy stack's realised range the
-                // moment a page is appended above it -- so SwiftUI cancels the
-                // task as a matter of course. Treating that as a failure and
-                // dropping the cursor stopped Saved and Upvoted dead after the
-                // first page, under a message saying there was nothing more.
+                // Emphatically not the end of the listing. The grid asks for
+                // the next page from a tile short of the end, and that tile
+                // can be recycled out from under the request the moment a page
+                // lands above it -- so a cancellation here is routine. Treating
+                // it as a failure and dropping the cursor stopped Saved and
+                // Upvoted dead after the first page, under a message saying
+                // there was nothing more.
                 return
             } catch {
                 // A real failure: keep what arrived and stop paging until the
@@ -487,142 +479,85 @@ struct GalleryView: View {
             isConnectedViaWiFi: networkStatus.isConnectedViaWiFi)
     }
 
-    private var columnCount: Int {
-        let minimumTileWidth: CGFloat = 170
-        guard containerWidth > 0 else { return 2 }
-        return max(2, Int((containerWidth - Self.gridPadding + Self.tileSpacing)
-            / (minimumTileWidth + Self.tileSpacing)))
-    }
-
-    private static let tileSpacing: CGFloat = 4
-    private static let gridPadding: CGFloat = 8
-
-    /// Places any tile that does not yet have a column, and leaves every tile
-    /// that does exactly where it is.
-    ///
-    /// Two separate things were wrong before. The columns were recomputed from
-    /// scratch inside `body`, so a tile already on screen could be handed a
-    /// different column by the next pass -- not resized, *relocated*, taking
-    /// everything below it in both columns with it. And the inputs it was
-    /// recomputed from all move while the reader is looking: the list grows
-    /// with pagination, the width arrives late, and ratios firm up as images
-    /// are measured. Logging it on device showed 13 to 24 tiles changing
-    /// column on every single pass.
-    ///
-    /// So placement is a decision made once per tile and then kept. New tiles
-    /// are still placed shortest-column-first, against heights accumulated
-    /// from the tiles already there, which is what keeps the columns level.
-    private func rebuildColumns() {
-        let count = columnCount
-        guard containerWidth > 0, count > 0 else { return }
-        let tileWidth = max(
-            1,
-            (containerWidth - Self.gridPadding - Self.tileSpacing * CGFloat(count - 1)) / CGFloat(count))
-
-        var assignment = columnByItem
-        // A different number of columns is a different layout; nothing can be
-        // carried over.
-        if count != laidOutColumnCount { assignment.removeAll() }
-
-        var built = Array(repeating: [GalleryMediaItem](), count: count)
-        var heights = Array(repeating: CGFloat(0), count: count)
-        for item in items {
-            let column: Int
-            if let existing = assignment[item.id], existing < count {
-                column = existing
-            } else {
-                let shortest = heights.min() ?? 0
-                column = heights.indices.first { heights[$0] <= shortest + Self.tileSpacing } ?? 0
-                assignment[item.id] = column
-            }
-            built[column].append(item)
-            heights[column] += tileWidth / max(item.aspectRatio, 0.05) + Self.tileSpacing
-        }
-        columnByItem = assignment
-        laidOutColumnCount = count
-        columns = built
-    }
-
-    /// Changes when the grid genuinely has different tiles to show. Ratios
-    /// firming up deliberately do not appear here: a tile that learns its
-    /// shape should resize where it stands, never move.
-    private var itemsKey: String {
-        "\(items.count):\(items.first?.id ?? "")"
+    /// What the grid shows under the last tile. Only the states that belong
+    /// *below* a list of tiles: an empty grid says its piece in the middle of
+    /// the screen instead, where there is nothing for a footer to sit under.
+    private var footerState: GalleryFooterView.State {
+        if case .failed(let message) = loadState { return .failed(message) }
+        if nextPageCursor != nil { return .loadingMore }
+        return .end
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                HStack(alignment: .top, spacing: Self.tileSpacing) {
-                    ForEach(columns.indices, id: \.self) { column in
-                        LazyVStack(spacing: Self.tileSpacing) {
-                            ForEach(columns[column]) { item in
-                                GalleryMediaTile(
-                                    item: item,
-                                    blursNSFW: dependencies.settings.blurNSFWMedia && !revealsSensitiveMedia,
-                                    blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia,
-                                    autoplays: autoplaysInPlace
-                                ) { selectedItem = item }
-                            }
+        content
+            .navigationTitle(source.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    if blursSensitiveMedia {
+                        Button {
+                            revealsSensitiveMedia.toggle()
+                        } label: {
+                            Label("Sensitive media blur", systemImage: revealsSensitiveMedia ? "eye" : "eye.slash")
                         }
-                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("Sensitive media blur")
+                        .accessibilityValue(revealsSensitiveMedia ? "Off" : "On")
+                        .accessibilityHint(revealsSensitiveMedia ? "Blur sensitive images" : "Show sensitive images")
                     }
                 }
-                .padding(.horizontal, Self.gridPadding / 2)
+            }
+            .task { await load(forceRefresh: false) }
+            .fullScreenCover(item: $selectedItem) { item in
+                OctonautMediaViewer(post: item.post, initialPage: item.page, initiallyRevealed: revealsSensitiveMedia, onOpenPost: {
+                    selectedItem = nil
+                    router.push(.post(item.post))
+                })
+            }
+    }
 
-                if case .failed(let message) = loadState {
-                    VStack(spacing: 12) {
-                        Text(message).font(.callout).foregroundStyle(.secondary)
-                        Button("Try again") {
-                            Task { await load(forceRefresh: true) }
-                        }
-                    }
-                    .padding()
-                } else if loadState == .loading || loadState == .idle {
-                    ProgressView("Loading gallery").padding()
-                } else if let cursor = nextPageCursor {
-                    ProgressView("Loading more")
-                        .padding()
-                        .task(id: cursor) { await loadMore() }
-                } else if items.isEmpty {
-                    ContentUnavailableView("No media posts", systemImage: "photo.on.rectangle.angled",
-                        description: Text("This feed has no displayable images or videos."))
-                        .padding(.top, 60)
-                } else {
-                    Text("You've reached the end.")
-                        .font(.footnote).foregroundStyle(.secondary).padding()
+    @ViewBuilder
+    private var content: some View {
+        let items = self.items
+        if items.isEmpty {
+            // Nothing to recycle, so nothing to put a collection view to. The
+            // states that describe an absence are plain SwiftUI, and keep the
+            // pull-to-refresh the grid gets from its own refresh control.
+            ScrollView {
+                emptyState.frame(maxWidth: .infinity)
+            }
+            .refreshable { await load(forceRefresh: true) }
+        } else {
+            GalleryGridView(
+                items: items,
+                blursNSFW: dependencies.settings.blurNSFWMedia && !revealsSensitiveMedia,
+                blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia,
+                autoplays: autoplaysInPlace,
+                footerState: footerState,
+                onOpen: { selectedItem = $0 },
+                onReachEnd: { Task { await loadMore() } },
+                onRetry: { Task { await load(forceRefresh: true) } },
+                onRefresh: { Task { await load(forceRefresh: true) } }
+            )
+            .ignoresSafeArea(edges: .bottom)
+        }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if case .failed(let message) = loadState {
+            VStack(spacing: 12) {
+                Text(message).font(.callout).foregroundStyle(.secondary)
+                Button("Try again") {
+                    Task { await load(forceRefresh: true) }
                 }
             }
-        }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-            guard width != containerWidth else { return }
-            containerWidth = width
-            rebuildColumns()
-        }
-        .onChange(of: itemsKey) { _, _ in rebuildColumns() }
-        .navigationTitle(source.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if blursSensitiveMedia {
-                    Button {
-                        revealsSensitiveMedia.toggle()
-                    } label: {
-                        Label("Sensitive media blur", systemImage: revealsSensitiveMedia ? "eye" : "eye.slash")
-                    }
-                    .accessibilityLabel("Sensitive media blur")
-                    .accessibilityValue(revealsSensitiveMedia ? "Off" : "On")
-                    .accessibilityHint(revealsSensitiveMedia ? "Blur sensitive images" : "Show sensitive images")
-                }
-            }
-        }
-        .task { await load(forceRefresh: false) }
-        .refreshable { await load(forceRefresh: true) }
-        .fullScreenCover(item: $selectedItem) { item in
-            OctonautMediaViewer(post: item.post, initialPage: item.page, initiallyRevealed: revealsSensitiveMedia, onOpenPost: {
-                selectedItem = nil
-                router.push(.post(item.post))
-            })
+            .padding()
+        } else if loadState == .loading || loadState == .idle {
+            ProgressView("Loading gallery").padding(.top, 60)
+        } else {
+            ContentUnavailableView("No media posts", systemImage: "photo.on.rectangle.angled",
+                description: Text("This feed has no displayable images or videos."))
+                .padding(.top, 60)
         }
     }
 }
