@@ -1460,6 +1460,42 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(thumbnailURL?.absoluteString, "https://preview.redd.it/parentclip.jpg")
     }
 
+    func testVideoPosterPrefersAPreviewFrameOverTheSquareThumbnail() async throws {
+        // Reddit's `thumbnail` is a ~140px crop at its own proportions, so
+        // drawing it in a tile laid out at the video's shape means scaling it
+        // up four- or five-fold and cropping it -- the blurry zoom reported
+        // from the phone on 2026-10-01. `preview.images[0]` is a frame of the
+        // video itself, so it matches the shape the tile already has.
+        let data = Data(
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"poster1","name":"t3_poster1","permalink":"/r/funny/comments/poster1/example/","title":"Video with a preview ladder","subreddit":"funny","url":"https://v.redd.it/poster1","is_self":false,"thumbnail":"https://b.thumbs.redditmedia.com/square140.jpg","preview":{"images":[{"source":{"url":"https://preview.redd.it/poster1.jpg?width=1920","width":1920,"height":1080},"resolutions":[{"url":"https://preview.redd.it/poster1.jpg?width=320","width":320,"height":180},{"url":"https://preview.redd.it/poster1.jpg?width=640","width":640,"height":360},{"url":"https://preview.redd.it/poster1.jpg?width=960","width":960,"height":540}]}]},"secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/poster1/DASH_480.mp4","has_audio":false,"is_gif":false}}}}]}}"#
+                .utf8)
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+
+        guard case .video(_, _, let posterURL, _, _, _) = post.media else {
+            return XCTFail("Expected video media")
+        }
+        // The smallest rung at or above 640px: sharp on a ~209pt tile at 3x,
+        // and not the 1920px source, which is the bandwidth mistake item B
+        // existed to fix.
+        XCTAssertEqual(
+            posterURL?.absoluteString, "https://preview.redd.it/poster1.jpg?width=640")
+    }
+
+    func testVideoPosterFallsBackToTheThumbnailWhenNoPreviewExists() async throws {
+        // A crop is better than an empty box. This is also the shape of the
+        // existing crosspost fixture, so the fallback is not hypothetical.
+        let data = Data(
+            #"{"data":{"after":null,"before":null,"children":[{"kind":"t3","data":{"id":"poster2","name":"t3_poster2","permalink":"/r/funny/comments/poster2/example/","title":"Video with no preview","subreddit":"funny","url":"https://v.redd.it/poster2","is_self":false,"thumbnail":"https://b.thumbs.redditmedia.com/square140.jpg","secure_media":{"reddit_video":{"fallback_url":"https://v.redd.it/poster2/DASH_480.mp4","has_audio":false,"is_gif":false}}}}]}}"#
+                .utf8)
+        let post = try XCTUnwrap(RedditJSONCodec.decodePosts(data).items.first)
+
+        guard case .video(_, _, let posterURL, _, _, _) = post.media else {
+            return XCTFail("Expected video media")
+        }
+        XCTAssertEqual(
+            posterURL?.absoluteString, "https://b.thumbs.redditmedia.com/square140.jpg")
+    }
+
     func testDirectImageURLInSelfTextBecomesNativeImage() async throws {
         let imageURL = "https://preview.redd.it/example.png?width=786&format=png&auto=webp&s=abc123"
         let data = Data(

@@ -188,7 +188,7 @@ enum RedditJSONCodec {
             html: object["selftext_html"]?.stringValue
         )
         let bodyImageURL = directImageURL(in: decodedBody?.plainText)
-        let bodyVideo = bodyVideoMedia(in: decodedBody?.plainText, thumbnailURL: thumbnail(object))
+        let bodyVideo = bodyVideoMedia(in: decodedBody?.plainText, thumbnailURL: videoPoster(object))
         let targetURL = url(object["url_overridden_by_dest"]?.stringValue)
             ?? url(object["url"]?.stringValue)
         let postHint = object["post_hint"]?.stringValue
@@ -527,6 +527,35 @@ enum RedditJSONCodec {
         url(object["thumbnail"]?.stringValue) ?? previewImageURL(object) ?? oEmbedThumbnailURL(object)
     }
 
+    /// The still to show for a video before it is playing.
+    ///
+    /// Deliberately not `thumbnail(_:)`, which prefers Reddit's `thumbnail`
+    /// field -- a ~140px crop at its own proportions, usually square. Drawn
+    /// into a tile laid out at the video's real shape it has to be scaled up
+    /// four- or five-fold and cropped, which reads as a blurry zoom and is
+    /// nothing like the frame the video opens on.
+    ///
+    /// `preview.images[0]` is a frame of the video itself, so it matches the
+    /// shape the tile is already laid out at and nothing is cropped. The
+    /// ladder is read rather than the source: `source` is routinely 1080px
+    /// and up, and fetching that per tile is the mistake item B existed to
+    /// fix. Smallest entry at or above 640px is comfortably sharp on a
+    /// ~209pt gallery tile at 3x and still fine on a full-width feed row.
+    ///
+    /// The square thumbnail stays as the last resort, because a crop is
+    /// better than an empty box when a post publishes no preview at all.
+    private static func videoPoster(_ object: [String: RedditJSONValue]) -> URL? {
+        let ladder = previewVariants(object)
+        let sized = ladder
+            .filter { $0.width >= 640 }
+            .min { $0.width < $1.width }
+            ?? ladder.max { $0.width < $1.width }
+        return sized?.url
+            ?? previewImageURL(object)
+            ?? url(object["thumbnail"]?.stringValue)
+            ?? oEmbedThumbnailURL(object)
+    }
+
     private static func mediaCandidates(
         _ object: [String: RedditJSONValue]
     ) -> [[String: RedditJSONValue]] {
@@ -645,7 +674,7 @@ enum RedditJSONCodec {
             return .video(
                 url: videoURL,
                 audioURL: audioURL,
-                thumbnailURL: thumbnail(candidate) ?? thumbnail(object),
+                thumbnailURL: videoPoster(candidate) ?? videoPoster(object),
                 isGIF: isGIF,
                 width: int(redditVideo["width"]),
                 height: int(redditVideo["height"])
@@ -663,7 +692,7 @@ enum RedditJSONCodec {
             return .video(
                 url: redditHLSURL(for: targetURL),
                 audioURL: nil,
-                thumbnailURL: thumbnail(object),
+                thumbnailURL: videoPoster(object),
                 isGIF: false,
                 width: previewDimensions?.width,
                 height: previewDimensions?.height
@@ -673,7 +702,7 @@ enum RedditJSONCodec {
         return .video(
             url: targetURL,
             audioURL: nil,
-            thumbnailURL: thumbnail(object),
+            thumbnailURL: videoPoster(object),
             isGIF: false,
             width: previewDimensions?.width,
             height: previewDimensions?.height
@@ -709,7 +738,7 @@ enum RedditJSONCodec {
             return .video(
                 url: playableURL,
                 audioURL: nil,
-                thumbnailURL: thumbnail(candidate) ?? thumbnail(object),
+                thumbnailURL: videoPoster(candidate) ?? videoPoster(object),
                 isGIF: true,
                 width: dimensions?.width,
                 height: dimensions?.height
