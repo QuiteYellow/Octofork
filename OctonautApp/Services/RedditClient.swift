@@ -491,6 +491,7 @@ actor URLSessionRedditClient: RedditClient {
         let data: Data
         let response: URLResponse
         do {
+            try await OctonautNetworkGate.waitUntilPermitted()
             (data, response) = try await session.data(for: request)
         } catch is CancellationError {
             throw CancellationError()
@@ -568,6 +569,9 @@ actor URLSessionRedditClient: RedditClient {
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         request.setValue("en-GB,en;q=0.9", forHTTPHeaderField: "Accept-Language")
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        // Seeding cookies is still traffic, and this runs before the first
+        // real request -- exactly the race the gate exists to stop.
+        guard (try? await OctonautNetworkGate.waitUntilPermitted()) != nil else { return }
         guard let (_, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode) else {

@@ -664,6 +664,7 @@ actor ConfiguredIntelligenceService: IntelligenceService {
         request.httpBody = try JSONEncoder().encode(body)
 
         do {
+            try await OctonautNetworkGate.waitUntilPermitted()
             let (data, urlResponse) = try await session.data(for: request)
             guard let http = urlResponse as? HTTPURLResponse else {
                 throw IntelligenceError.generationFailed("The summary provider returned an invalid response.")

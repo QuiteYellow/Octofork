@@ -66,6 +66,7 @@ private actor OctonautMediaSaveCoordinator {
     private let fileManager = FileManager.default
 
     func downloadImage(from sourceURL: URL) async throws -> URL {
+        try await OctonautNetworkGate.waitUntilPermitted()
         let (temporaryURL, response) = try await URLSession.shared.download(from: sourceURL)
         if let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode) {
             throw SaveError.downloadFailed
@@ -213,6 +214,11 @@ private enum OctonautAVPlayerFactory {
     }
 
     static func makePlayer(videoURL: URL, audioURL: URL?) async -> Playback {
+        // The gate for every composed-playback path below. Each one ends in
+        // localPlaybackPlayer, and everything between here and there loads
+        // tracks off the asset -- which is the network I/O, not the
+        // AVURLAsset init.
+        try? await OctonautNetworkGate.waitUntilPermitted(for: videoURL)
         let videoAsset = AVURLAsset(url: videoURL)
         let aspectRatio = await aspectRatio(for: videoAsset)
         guard let audioURL, audioURL != videoURL else {
@@ -345,6 +351,7 @@ private enum OctonautAVPlayerFactory {
     private static func audioTracks(
         at url: URL
     ) async -> (asset: AVURLAsset, tracks: [AVAssetTrack])? {
+        try? await OctonautNetworkGate.waitUntilPermitted(for: url)
         let asset = AVURLAsset(url: url)
         guard let tracks = try? await asset.loadTracks(withMediaType: .audio),
               !tracks.isEmpty else {
@@ -354,6 +361,7 @@ private enum OctonautAVPlayerFactory {
     }
 
     private static func manifestAudioURL(for videoURL: URL) async -> URL? {
+        guard (try? await OctonautNetworkGate.waitUntilPermitted()) != nil else { return nil }
         guard let manifestURL = RedditDASHManifest.manifestURL(for: videoURL),
               let (data, _) = try? await URLSession.shared.data(from: manifestURL) else {
             return nil
@@ -365,7 +373,12 @@ private enum OctonautAVPlayerFactory {
     /// failed carries that failure cached, and an item made from it can refuse
     /// to ever become ready to play -- a silent video would become no video.
     private static func localPlaybackPlayer(url: URL) -> AVPlayer {
-        localPlaybackPlayer(item: AVPlayerItem(asset: AVURLAsset(url: url)))
+        // Synchronous, so it cannot wait the way the async paths do -- it
+        // refuses instead, and the player comes back empty. In practice this
+        // almost never fires: nothing reaches a video row without a feed
+        // fetch having already passed the same gate.
+        guard OctonautNetworkGate.permits(url) else { return AVPlayer() }
+        return localPlaybackPlayer(item: AVPlayerItem(asset: AVURLAsset(url: url)))
     }
 
     /// A player for media that needs no composing, built synchronously.
@@ -382,6 +395,7 @@ private enum OctonautAVPlayerFactory {
     /// the asset cannot answer -- an HLS playlist has no asset tracks to
     /// read -- so a caller can keep its own default rather than adopt 16:9.
     static func measuredAspectRatio(for url: URL) async -> CGFloat? {
+        try? await OctonautNetworkGate.waitUntilPermitted(for: url)
         let asset = AVURLAsset(url: url)
         guard let track = try? await asset.loadTracks(withMediaType: .video).first,
               let naturalSize = try? await track.load(.naturalSize),

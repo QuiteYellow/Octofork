@@ -56,6 +56,7 @@ actor RedditSessionValidator {
         let data: Data
         let response: URLResponse
         do {
+            try await OctonautNetworkGate.waitUntilPermitted()
             (data, response) = try await session.data(for: request)
         } catch is CancellationError {
             throw CancellationError()
