@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @MainActor
 struct SettingsRootView: View {
@@ -186,6 +187,10 @@ struct SettingsDetailView: View {
                     Text("Wi-Fi").tag(AutoplayVideo.wifi)
                     Text("Always").tag(AutoplayVideo.always)
                 }
+                Toggle("Play video audio in feed", isOn: Binding(
+                    get: { dependencies.settings.playFeedVideoAudio },
+                    set: { dependencies.settings.playFeedVideoAudio = $0 }
+                ))
             }
             Section {
                 Toggle("Mark while scrolling", isOn: Binding(get: { dependencies.settings.autoMarkSeenWhileScrolling }, set: { dependencies.settings.autoMarkSeenWhileScrolling = $0 }))
@@ -201,16 +206,20 @@ struct SettingsDetailView: View {
                     get: { dependencies.settings.useSplitViewOnIPad },
                     set: { dependencies.settings.useSplitViewOnIPad = $0 }
                 ))
-                Toggle("Show navigation at bottom", isOn: Binding(
-                    get: { dependencies.settings.showBottomNavigationOnLargeScreens },
-                    set: { dependencies.settings.showBottomNavigationOnLargeScreens = $0 }
-                ))
+                if UIDevice.current.userInterfaceIdiom != .pad {
+                    Toggle("Show navigation at bottom", isOn: Binding(
+                        get: { dependencies.settings.showBottomNavigationOnLargeScreens },
+                        set: { dependencies.settings.showBottomNavigationOnLargeScreens = $0 }
+                    ))
+                }
                 Text("Shows communities, the selected feed, and post details in separate columns on iPad and wide inner displays.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                Text("Navigation appears in the sidebar by default. Turn this on to use the floating bottom navigation instead.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                if UIDevice.current.userInterfaceIdiom != .pad {
+                    Text("On wide phone displays, navigation starts at the top and can move to the side. Turn this on to use the floating bottom navigation instead.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

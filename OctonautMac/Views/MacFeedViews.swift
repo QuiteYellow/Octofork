@@ -31,7 +31,7 @@ struct MacFeedListView: View {
                     description: Text("This feed is empty or its posts were filtered.")
                 )
             default:
-                List(selection: $selectedPost) {
+                List(selection: dependencies.settings.feedLayout == .full ? nil : $selectedPost) {
                     if store.filteredPostCount > 0 {
                         Label(
                             "\(store.filteredPostCount) posts hidden by filters",
@@ -60,6 +60,16 @@ struct MacFeedListView: View {
                         }
                             .contentShape(Rectangle())
                             .tag(post)
+                            .overlay(alignment: .leading) {
+                                if dependencies.settings.feedLayout == .full,
+                                   selectedPost?.id == post.id {
+                                    Capsule()
+                                        .fill(Color.accentColor)
+                                        .frame(width: 3)
+                                        .padding(.vertical, 8)
+                                        .allowsHitTesting(false)
+                                }
+                            }
                             .simultaneousGesture(
                                 TapGesture().onEnded {
                                     selectedPost = post
@@ -238,14 +248,13 @@ private struct MacPostMediaCard: View {
                     .background(.quaternary, in: Capsule())
             }
 
-            if !post.body.isEmpty {
-                RedditMarkdownView(source: post.body)
+            let preview = post.bodyPreview
+            if !preview.isEmpty {
+                Text(preview)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .tint(.accentColor)
                     .lineLimit(post.hasMedia ? 3 : 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
             }
 
             if post.hasMedia {
@@ -476,6 +485,7 @@ struct MacPostDetailView: View {
                         fillsPane: true,
                         onTogglePaneFill: toggleMediaPaneFill
                     )
+                    .id(displayedPost.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     postContent(displayedPost)
@@ -585,6 +595,7 @@ struct MacPostDetailView: View {
                             fillsPane: false,
                             onTogglePaneFill: toggleMediaPaneFill
                         )
+                        .id(post.id)
                         .frame(height: effectiveEmbeddedMediaHeight)
 
                         mediaResizeHandle
@@ -715,11 +726,13 @@ struct MacPostDetailView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .modifier(MacMediaDownloadContextMenu(post: post))
+                .id(post.id)
             } else if let mediaURL = post.mediaURL {
                 Link(destination: mediaURL) {
                     Label("Open \(post.mediaTitle.lowercased())", systemImage: "play.rectangle")
                 }
                 .modifier(MacMediaDownloadContextMenu(post: post))
+                .id(post.id)
             }
 
             HStack(spacing: 16) {

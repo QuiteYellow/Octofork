@@ -113,10 +113,10 @@ private actor OctonautImageDataCache {
 
         do {
             let data = try await task.value
-            forget(url)
+            forget(url, ifCurrent: task)
             return data
         } catch {
-            forget(url)
+            forget(url, ifCurrent: task)
             throw error
         }
     }
@@ -134,7 +134,16 @@ private actor OctonautImageDataCache {
         warming.removeAll()
     }
 
-    private func forget(_ url: URL) {
+    /// Drops the in-flight record for `url`, but only if `task` is still the
+    /// one holding it.
+    ///
+    /// The identity check is upstream's (`191f20a`), and it fixes a bug this
+    /// side had too. Clearing unconditionally means a request that finishes
+    /// late wipes the entry belonging to a *newer* request for the same URL,
+    /// and every caller that arrives after that misses the dedupe and starts
+    /// a second download of something already in flight.
+    private func forget(_ url: URL, ifCurrent task: Task<Data, Error>) {
+        guard inFlight[url] == task else { return }
         inFlight[url] = nil
         warming.remove(url)
     }
@@ -251,6 +260,13 @@ enum OctonautImageCache {
         return cache
     }()
 
+    /// One decode per URL, however many callers ask for it.
+    ///
+    /// Upstream's (`191f20a`). Without it two tiles showing the same image --
+    /// a crosspost, a repost, the same clip twice in one feed -- each fetch
+    /// and decode it, and a decode is the expensive half.
+    private static var inFlightDecodes: [URL: Task<UIImage, Error>] = [:]
+
     static func image(
         for url: URL,
         priority: OctonautImageLoadPriority = .visible
@@ -258,17 +274,35 @@ enum OctonautImageCache {
         if let image = cachedImage(for: url) {
             return image
         }
+        // A caller that joins an in-flight decode inherits whatever priority
+        // started it. Deliberate: the alternative is cancelling work already
+        // under way to restart it a notch higher, which costs more than the
+        // notch is worth.
+        if let inFlight = inFlightDecodes[url] {
+            return try await inFlight.value
+        }
 
-        let data = try await OctonautImageDataCache.shared.data(for: url, priority: priority)
-        guard !Task.isCancelled else { throw CancellationError() }
-        let image = try await decoded(
-            data: data,
-            maxPixelSize: defaultMaxPixelSize,
-            priority: priority.decodePriority
-        )
-        guard !Task.isCancelled else { throw CancellationError() }
-        decodedImages.setObject(image, forKey: url as NSURL, cost: image.decodedByteCount)
-        return image
+        let task = Task<UIImage, Error> { @MainActor in
+            let data = try await OctonautImageDataCache.shared.data(for: url, priority: priority)
+            guard !Task.isCancelled else { throw CancellationError() }
+            let image = try await decoded(
+                data: data,
+                maxPixelSize: defaultMaxPixelSize,
+                priority: priority.decodePriority
+            )
+            guard !Task.isCancelled else { throw CancellationError() }
+            decodedImages.setObject(image, forKey: url as NSURL, cost: image.decodedByteCount)
+            return image
+        }
+        inFlightDecodes[url] = task
+        defer {
+            // Only if it is still ours. Upstream clears unconditionally here,
+            // which is the same bug they fixed one layer down in the same
+            // commit: a decode that finishes late would wipe the entry
+            // belonging to a newer decode of the same URL.
+            if inFlightDecodes[url] == task { inFlightDecodes[url] = nil }
+        }
+        return try await task.value
     }
 
     /// Starts dropping decoded images whenever the system reports pressure.
@@ -372,6 +406,8 @@ enum OctonautImageCache {
     }
 
     static func removeAll() async {
+        inFlightDecodes.values.forEach { $0.cancel() }
+        inFlightDecodes.removeAll()
         decodedImages.removeAllObjects()
         await OctonautImageDataCache.shared.removeAll()
     }

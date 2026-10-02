@@ -205,15 +205,21 @@ final class DomainTests: XCTestCase {
     }
 
     func testCommentBuildsWebsiteCommentRequest() {
-        let request = URLSessionRedditClient.mutationRequest(
-            for: .comment(thingID: "t3_example", text: "A comment")
-        )
+        let postID = IDNormalization.fullname("example", kind: "t3")
+        let request = URLSessionRedditClient.mutationRequest(for: .comment(thingID: postID, text: "A comment"))
 
         XCTAssertEqual(request.method, "POST")
         XCTAssertEqual(request.path, "/api/comment")
         XCTAssertEqual(request.fields["thing_id"], "t3_example")
         XCTAssertEqual(request.fields["text"], "A comment")
         XCTAssertEqual(request.fields["api_type"], "json")
+
+        let commentID = IDNormalization.fullname("reply", kind: "t1")
+        let replyRequest = URLSessionRedditClient.mutationRequest(
+            for: .comment(thingID: commentID, text: "A reply")
+        )
+        XCTAssertEqual(replyRequest.path, "/api/comment")
+        XCTAssertEqual(replyRequest.fields["thing_id"], "t1_reply")
     }
 
     func testUserSearchBuildsPublicWebsiteJSONRoute() {
@@ -529,6 +535,19 @@ final class DomainTests: XCTestCase {
                 )),
                 .text("\nAfter"),
             ]
+        )
+    }
+
+    func testPostPreviewUsesTextBeforeTableAndKeepsSpoilersHidden() {
+        let source = "Welcome to [the roundup](https://example.com). >!secret!<\n\n|Thread|Votes|\n|:-|:-|\n|A long story|42|"
+
+        XCTAssertEqual(
+            RedditPostMarkdown.previewText(from: source),
+            "Welcome to the roundup. [Reveal spoiler]"
+        )
+        XCTAssertEqual(
+            RedditPostMarkdown.previewText(from: "|Thread|Votes|\n|:-|:-|\n|A long story|42|"),
+            ""
         )
     }
 

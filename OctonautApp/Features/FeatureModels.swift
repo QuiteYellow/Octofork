@@ -88,7 +88,12 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
     var author: String
     var authorFlair: Flair?
     var title: String
-    var body: String
+    var body: String {
+        didSet {
+            bodyPreview = body.isEmpty ? "" : RedditPostMarkdown.previewText(from: body)
+        }
+    }
+    var bodyPreview: String
     var flair: Flair?
     var score: Int
     var comments: Int
@@ -245,7 +250,8 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         galleryAspectRatios: [CGFloat?] = [],
         audioURL: URL? = nil,
         mediaAspectRatio: CGFloat? = nil,
-        imageVariants: [[ImageVariant]] = []
+        imageVariants: [[ImageVariant]] = [],
+        bodyPreview: String? = nil
     ) {
         self.id = id
         self.community = community
@@ -274,6 +280,7 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         self.audioURL = audioURL
         self.mediaAspectRatio = mediaAspectRatio
         self.imageVariants = imageVariants
+        self.bodyPreview = bodyPreview ?? (body.isEmpty ? "" : RedditPostMarkdown.previewText(from: body))
     }
 
     init(post: Post) {
