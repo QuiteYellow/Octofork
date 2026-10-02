@@ -1982,74 +1982,85 @@ struct OctonautMediaViewer: View {
                         .foregroundStyle(.white)
                 } else {
                     GeometryReader { viewport in
-                        ScrollView(.horizontal) {
-                            HStack(spacing: 0) {
-                                ForEach(Array(mediaURLs.enumerated()), id: \.offset) { index, url in
-                                    Group {
-                                        if post.mediaKind == "video" || post.mediaKind == "gif" {
-                                            OctonautVideoDetailView(
-                                                url: url,
-                                                audioURL: post.audioURL,
-                                                loops: post.mediaKind == "gif",
-                                                startsMuted: post.mediaKind == "gif",
-                                                allowsFrameAnalysis: dependencies.settings.enableLiveText,
-                                                onPlayerChange: { activePlayer = $0 }
-                                            )
-                                        } else if post.mediaKind == "embeddedVideo",
-                                                  let embedURL = EmbeddedVideoURL.embedURL(for: url) {
-                                            ZStack {
-                                                OctonautEmbeddedVideoView(url: embedURL)
-                                                    .aspectRatio(16 / 9, contentMode: .fit)
-                                                    .blur(radius: shouldBlurMedia ? 24 : 0)
-                                                if shouldBlurMedia {
-                                                    Button { isRevealed = true } label: {
-                                                        VStack(spacing: 7) {
-                                                            Image(systemName: "eye.slash")
-                                                            Text("Tap to reveal")
-                                                                .font(.caption.weight(.semibold))
-                                                        }
-                                                        .foregroundStyle(.white)
-                                                        .padding(18)
-                                                        .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 12))
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                }
-                                            }
-                                        } else {
-                                            ZStack {
-                                                OctonautZoomableImage(
-                                                    url: displayedImageURL(at: index),
-                                                    placeholderURL: placeholderImageURL(at: index),
-                                                    accessibilityLabel: "Image \(index + 1) of \(mediaURLs.count)",
-                                                    onZoomChange: { isZoomed = $0 }
+                        // `scrollPosition(id:)` reports the page a swipe lands
+                        // on, but it does not apply the value `page` already
+                        // holds when the viewer opens. So tapping the third
+                        // image of a gallery drew the chrome for page three --
+                        // "3 / 4", third dot -- over the *first* image: the
+                        // state was right and the scroll view had simply never
+                        // moved. This puts the scroll view where the state says
+                        // it already is.
+                        ScrollViewReader { proxy in
+                            ScrollView(.horizontal) {
+                                HStack(spacing: 0) {
+                                    ForEach(Array(mediaURLs.enumerated()), id: \.offset) { index, url in
+                                        Group {
+                                            if post.mediaKind == "video" || post.mediaKind == "gif" {
+                                                OctonautVideoDetailView(
+                                                    url: url,
+                                                    audioURL: post.audioURL,
+                                                    loops: post.mediaKind == "gif",
+                                                    startsMuted: post.mediaKind == "gif",
+                                                    allowsFrameAnalysis: dependencies.settings.enableLiveText,
+                                                    onPlayerChange: { activePlayer = $0 }
                                                 )
-                                                .blur(radius: shouldBlurMedia ? 24 : 0)
-                                                if shouldBlurMedia {
-                                                    Button { isRevealed = true } label: {
-                                                        VStack(spacing: 7) {
-                                                            Image(systemName: "eye.slash")
-                                                            Text("Tap to reveal")
-                                                                .font(.caption.weight(.semibold))
+                                            } else if post.mediaKind == "embeddedVideo",
+                                                      let embedURL = EmbeddedVideoURL.embedURL(for: url) {
+                                                ZStack {
+                                                    OctonautEmbeddedVideoView(url: embedURL)
+                                                        .aspectRatio(16 / 9, contentMode: .fit)
+                                                        .blur(radius: shouldBlurMedia ? 24 : 0)
+                                                    if shouldBlurMedia {
+                                                        Button { isRevealed = true } label: {
+                                                            VStack(spacing: 7) {
+                                                                Image(systemName: "eye.slash")
+                                                                Text("Tap to reveal")
+                                                                    .font(.caption.weight(.semibold))
+                                                            }
+                                                            .foregroundStyle(.white)
+                                                            .padding(18)
+                                                            .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 12))
                                                         }
-                                                        .foregroundStyle(.white)
-                                                        .padding(18)
-                                                        .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 12))
+                                                        .buttonStyle(.plain)
                                                     }
-                                                    .buttonStyle(.plain)
+                                                }
+                                            } else {
+                                                ZStack {
+                                                    OctonautZoomableImage(
+                                                        url: displayedImageURL(at: index),
+                                                        placeholderURL: placeholderImageURL(at: index),
+                                                        accessibilityLabel: "Image \(index + 1) of \(mediaURLs.count)",
+                                                        onZoomChange: { isZoomed = $0 }
+                                                    )
+                                                    .blur(radius: shouldBlurMedia ? 24 : 0)
+                                                    if shouldBlurMedia {
+                                                        Button { isRevealed = true } label: {
+                                                            VStack(spacing: 7) {
+                                                                Image(systemName: "eye.slash")
+                                                                Text("Tap to reveal")
+                                                                    .font(.caption.weight(.semibold))
+                                                            }
+                                                            .foregroundStyle(.white)
+                                                            .padding(18)
+                                                            .background(.black.opacity(0.68), in: RoundedRectangle(cornerRadius: 12))
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                    }
                                                 }
                                             }
                                         }
+                                        .frame(width: viewport.size.width, height: viewport.size.height)
+                                        .id(index)
                                     }
-                                    .frame(width: viewport.size.width, height: viewport.size.height)
-                                    .id(index)
                                 }
+                                .scrollTargetLayout()
                             }
-                            .scrollTargetLayout()
+                            .scrollTargetBehavior(.paging)
+                            .scrollPosition(id: pagePosition)
+                            .scrollDisabled(isZoomed)
+                            .scrollIndicators(.hidden)
+                            .onAppear { proxy.scrollTo(page, anchor: .center) }
                         }
-                        .scrollTargetBehavior(.paging)
-                        .scrollPosition(id: pagePosition)
-                        .scrollDisabled(isZoomed)
-                        .scrollIndicators(.hidden)
                     }
                     .ignoresSafeArea(.container, edges: .all)
                 }
