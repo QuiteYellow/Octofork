@@ -167,6 +167,10 @@ private actor OctonautImageDataCache {
             return cached.data
         }
 
+        // After the cache lookup, not before: serving an image already on disk
+        // puts nothing on the network, so the gate has no business blanking the
+        // feed for it.
+        try await OctonautNetworkGate.waitUntilPermitted()
         let (data, response) = try await session.data(for: request, delegate: delegate)
         if let httpResponse = response as? HTTPURLResponse,
            !(200..<300).contains(httpResponse.statusCode) {

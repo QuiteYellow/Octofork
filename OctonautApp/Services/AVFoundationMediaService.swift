@@ -89,6 +89,8 @@ actor AVFoundationMediaService: MediaService {
             return AVURLAsset(url: videoURL)
         }
 
+        try await OctonautNetworkGate.waitUntilPermitted(for: videoURL)
+        try await OctonautNetworkGate.waitUntilPermitted(for: audioURL)
         let videoAsset = AVURLAsset(url: videoURL)
         let audioAsset = AVURLAsset(url: audioURL)
         let videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
@@ -133,6 +135,7 @@ actor AVFoundationMediaService: MediaService {
         let data: Data
         let response: URLResponse
         do {
+            try await OctonautNetworkGate.waitUntilPermitted()
             (data, response) = try await session.data(for: request)
         } catch is CancellationError {
             throw CancellationError()
@@ -163,6 +166,7 @@ actor AVFoundationMediaService: MediaService {
         let temporaryURL: URL
         let response: URLResponse
         do {
+            try await OctonautNetworkGate.waitUntilPermitted()
             (temporaryURL, response) = try await session.download(for: request)
         } catch is CancellationError {
             throw CancellationError()

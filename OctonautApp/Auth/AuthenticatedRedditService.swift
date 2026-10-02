@@ -73,6 +73,7 @@ actor LiveAuthenticatedRedditService: AuthenticatedRedditService {
         request.setValue("\(credential.cookieName)=\(credential.cookieValue)", forHTTPHeaderField: "Cookie")
         request.setValue("Octonaut/1.0 (iOS; Reddit reader)", forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        try await OctonautNetworkGate.waitUntilPermitted()
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw RedditClientError.invalidResponse }
         if http.statusCode == 401 || http.statusCode == 403 { throw RedditClientError.authenticationRequired }

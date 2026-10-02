@@ -12,6 +12,16 @@ name: ${OCTOFORK_PROJECT_NAME}
 
 include:
   - project.yml
+  # An optional add-in, kept in its own repository and built into one local
+  # variant only. An unset or empty OCTOFORK_DEV_ADDIN evaluates as false, so
+  # the ordinary .env, a fresh .env copied from the example, and upstream's
+  # own project.yml all generate exactly what they generated before -- no
+  # extra target, no package dependency, no extra entitlement. Forgetting the
+  # variable is the safe direction. `relativePaths` makes that spec's own
+  # paths resolve against its repository rather than this one.
+  - path: ${OCTOFORK_DEV_ADDIN_PATH}/project.addin.yml
+    relativePaths: true
+    enable: ${OCTOFORK_DEV_ADDIN}
 
 options:
   bundleIdPrefix: ${OCTOFORK_BUNDLE_PREFIX}

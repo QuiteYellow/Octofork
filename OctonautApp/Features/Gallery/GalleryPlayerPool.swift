@@ -148,7 +148,11 @@ final class GalleryPlayerPool {
         entry.lastUsed = clock
         entry.player.isMuted = muted
 
-        if entry.url != url {
+        // Attaching an item is what starts the fetch, so that is where the
+        // gate has to refuse. Refusing in the condition rather than inside the
+        // body matters: the entry never adopts the URL, so it still looks
+        // stale and the next lease retries once the gate opens.
+        if entry.url != url, OctonautNetworkGate.permits(url) {
             entry.url = url
             entry.looper?.detach()
             entry.looper = nil
