@@ -282,7 +282,7 @@ enum PostMedia: Codable, Hashable, Sendable {
     /// should be choosing from.
     case image(url: URL, thumbnailURL: URL?, width: Int?, height: Int?, variants: [ImageVariant] = [])
     case gallery(items: [GalleryItem])
-    case video(url: URL, audioURL: URL?, thumbnailURL: URL?, isGIF: Bool)
+    case video(url: URL, audioURL: URL?, thumbnailURL: URL?, isGIF: Bool, width: Int?, height: Int?)
     case link(url: URL, metadata: LinkMetadata?)
     case poll(Poll)
     case unsupported(permalink: URL?, kind: String?)
@@ -292,7 +292,7 @@ enum PostMedia: Codable, Hashable, Sendable {
         case .none: return "none"
         case .image: return "image"
         case .gallery: return "gallery"
-        case .video(_, _, _, let isGIF): return isGIF ? "gif" : "video"
+        case .video(_, _, _, let isGIF, _, _): return isGIF ? "gif" : "video"
         case .link(let url, _):
             return EmbeddedVideoURL.embedURL(for: url) == nil ? "link" : "embeddedVideo"
         case .poll: return "poll"
@@ -303,7 +303,7 @@ enum PostMedia: Codable, Hashable, Sendable {
     var primaryURL: URL? {
         switch self {
         case .none, .poll: return nil
-        case .image(let url, _, _, _, _), .video(let url, _, _, _), .link(let url, _): return url
+        case .image(let url, _, _, _, _), .video(let url, _, _, _, _, _), .link(let url, _): return url
         case .gallery(let items): return items.first?.url
         case .unsupported(let permalink, _): return permalink
         }

@@ -791,7 +791,6 @@
 				INFOPLIST_FILE = OctonautApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Octonaut;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.news";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -988,7 +987,6 @@
 				INFOPLIST_FILE = OctonautApp/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Octonaut;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.news";
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
