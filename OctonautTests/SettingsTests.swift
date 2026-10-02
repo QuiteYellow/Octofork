@@ -312,6 +312,29 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(settings.filterRevision, before)
     }
 
+    func testGalleryColumnCountStartsUnsetAndRoundTripsThroughDefaults() {
+        let suite = "OctonautTests.\(UUID())"
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        // Zero means the reader has never pinched the grid, which is what lets
+        // it answer from its own width -- two columns on a phone, more on an
+        // iPad. A flat 2 could not tell the two cases apart.
+        XCTAssertEqual(settings.galleryColumnCount, 0)
+
+        settings.galleryColumnCount = 3
+        let reloaded = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertEqual(reloaded.galleryColumnCount, 3)
+    }
+
+    func testGalleryColumnCountClampsToTheCountsAGridWillLayOut() {
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "OctonautTests.\(UUID())")!)
+
+        settings.galleryColumnCount = 99
+        XCTAssertEqual(settings.galleryColumnCount, SettingsStore.maximumGalleryColumnCount)
+
+        settings.galleryColumnCount = -1
+        XCTAssertEqual(settings.galleryColumnCount, 0)
+    }
+
     func testThemeRoundTripsThroughDefaults() {
         let suite = "OctonautTests.\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!

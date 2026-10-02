@@ -1,5 +1,22 @@
 import UIKit
 
+/// A view that stays a capsule whatever height it is given.
+///
+/// It rounds itself, in its own layout pass, because the cell cannot do it
+/// for it. The badge lives in the cell's `contentView`, so its frame is
+/// resolved when *`contentView`* lays out its subviews -- which happens after
+/// `GalleryTileCell.layoutSubviews` has already returned. Reading the height
+/// there got zero on the first pass, so the badge was a square until some
+/// later pass happened to run, and whether one did came down to what else the
+/// grid was doing: tiles on screen when the column count changed were round,
+/// and everything else was square.
+final class CapsuleView: UIView {
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layer.cornerRadius = bounds.height / 2
+    }
+}
+
 /// One tile of the gallery grid.
 ///
 /// Plain UIKit rather than `UIHostingConfiguration`, which was the other
@@ -23,12 +40,26 @@ final class GalleryTileCell: UICollectionViewCell {
     private let failureIcon = UIImageView()
     private let blur = UIVisualEffectView(effect: nil)
     private let badge = UIImageView()
-    private let badgeBackground = UIView()
+    private let badgeBackground = CapsuleView()
 
     private var imageTask: Task<Void, Never>?
     private var lease: GalleryPlayerPool.Lease?
     private(set) var item: GalleryMediaItem?
     private var isBlurred = false
+    /// The copy this tile has asked for, which is not the same thing as the
+    /// item it is showing: the item fixes the picture, the column width fixes
+    /// which rung of Reddit's ladder to fetch it from. Kept so a tile that is
+    /// re-configured -- a blur toggle, a column change -- can tell "ask for a
+    /// bigger copy" from "nothing about my picture moved".
+    private var requestedURL: URL?
+
+    /// Steps the grid's column count by `$0`, returning whether it moved.
+    ///
+    /// Here rather than on the collection view because VoiceOver focuses
+    /// cells, not the grid, so the zoom action has to be offered by the thing
+    /// the reader is actually on. The grid owns the count; the cell only
+    /// forwards.
+    var onZoom: ((Int) -> Bool)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -88,8 +119,21 @@ final class GalleryTileCell: UICollectionViewCell {
         ])
 
         isAccessibilityElement = true
-        accessibilityTraits = .button
+        // `supportsZoom` is what puts VoiceOver's zoom actions on the tile,
+        // and it is the only way to the column count for a reader who cannot
+        // pinch. The toolbar menu is the other.
+        accessibilityTraits = [.button, .supportsZoom]
         accessibilityHint = "Opens the full screen media viewer"
+    }
+
+    /// Zooming *in* magnifies, which means larger tiles, which means fewer
+    /// columns -- the same step the pinch takes.
+    override func accessibilityZoomIn(at point: CGPoint) -> Bool {
+        onZoom?(-1) ?? false
+    }
+
+    override func accessibilityZoomOut(at point: CGPoint) -> Bool {
+        onZoom?(1) ?? false
     }
 
     @available(*, unavailable)
@@ -97,7 +141,6 @@ final class GalleryTileCell: UICollectionViewCell {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        badgeBackground.layer.cornerRadius = badgeBackground.bounds.height / 2
         // The pooled layer is not in the view hierarchy, so nothing lays it
         // out but this.
         if let playerLayer = playerHostView.layer.sublayers?.first {
@@ -122,9 +165,23 @@ final class GalleryTileCell: UICollectionViewCell {
         blur.effect = nil
         badgeBackground.isHidden = true
         item = nil
+        requestedURL = nil
+        onZoom = nil
     }
 
-    func configure(with item: GalleryMediaItem, blurred: Bool) {
+    /// - Parameter displayWidth: the width of the column this tile landed in,
+    ///   which decides which of Reddit's copies is worth fetching. Passed in
+    ///   rather than measured, because the collection view applies the layout
+    ///   attributes' frame *after* `cellForItemAt` returns -- at this point a
+    ///   recycled cell is still the size of whatever tile had it last.
+    func configure(with item: GalleryMediaItem, blurred: Bool, displayWidth: CGFloat) {
+        // A tile being re-configured for the item it already holds -- the
+        // reader pinched the grid to a different column count, or toggled the
+        // blur -- keeps what it is showing. Clearing it would flash the whole
+        // visible grid grey on every pinch step, and the copy it holds is a
+        // perfectly good stand-in for the larger one on its way.
+        let keepsImage = self.item?.id == item.id && imageView.image != nil
+
         self.item = item
         self.isBlurred = blurred
 
@@ -132,7 +189,10 @@ final class GalleryTileCell: UICollectionViewCell {
         accessibilityLabel = "\(item.post.isSensitive ? "Sensitive media. " : "")"
             + "\(item.post.title), image \(item.page + 1) of "
             + "\(max(1, item.post.galleryURLs.count))"
-        updateBadge(isPlaying: false)
+        // Not `false`: a re-configure reaches cells that are mid-playback, and
+        // answering "not playing" for one of those puts a play badge back over
+        // a running video.
+        updateBadge(isPlaying: lease != nil)
 
         // A video with no poster has nothing but black to fall back to, so
         // the tile paints itself black rather than showing the grey an image
@@ -145,30 +205,48 @@ final class GalleryTileCell: UICollectionViewCell {
             return
         }
 
-        guard let url = item.previewURL else {
+        guard let url = item.previewURL(displayWidth: displayWidth) else {
             // A video without a poster is not a failure -- it is just a tile
             // waiting for a player. Only an image with no URL is broken.
             failureIcon.isHidden = item.isVideo
             return
         }
 
+        // This exact copy has already been asked for. The commonest outcome of
+        // a column change by some distance: Reddit's ladder is coarse, so most
+        // steps land a tile back on the rung it was already on, and a tile
+        // that reloaded anyway would be doing the work twice to show the same
+        // pixels.
+        guard requestedURL != url else { return }
+        imageTask?.cancel()
+        requestedURL = url
+
         if let cached = OctonautImageCache.cachedImage(for: url) {
             // No fade and no spinner on a cache hit: the commonest case by far
             // once a tile has been past once, and animating it is what made
             // scrolling back through a gallery flicker.
+            imageTask = nil
             show(cached, animated: false)
             return
         }
 
-        // No spinner over a video: the tile is already black with a play
-        // badge, which reads as a video that has not started rather than as
-        // something still loading.
-        if !item.isVideo { spinner.startAnimating() }
+        if !keepsImage {
+            imageView.image = nil
+            imageView.isHidden = true
+            // No spinner over a video: the tile is already black with a play
+            // badge, which reads as a video that has not started rather than
+            // as something still loading.
+            if !item.isVideo { spinner.startAnimating() }
+        }
         let isVideo = item.isVideo
+        // The shape of a picture belongs to the picture, not to the rung it
+        // arrived on, so the measurement is filed under the canonical URL --
+        // which is what lets the copy vary with the column width at all.
+        let canonicalURL = item.url
         imageTask = Task { [weak self] in
             do {
                 let image = try await OctonautImageCache.image(for: url)
-                guard !Task.isCancelled, let self, self.item?.previewURL == url else { return }
+                guard !Task.isCancelled, let self, self.requestedURL == url else { return }
                 // Measured once and remembered, so a tile that has been off
                 // screen and back still knows its shape while its image is
                 // being fetched. Images only: what a video tile loads here is
@@ -176,13 +254,17 @@ final class GalleryTileCell: UICollectionViewCell {
                 // own, and laying the tile out to those would letterbox the
                 // video inside a box of the wrong shape when a player arrives.
                 if !isVideo, image.size.height > 0 {
-                    GalleryTileRatios.remember(image.size.width / image.size.height, for: url)
+                    GalleryTileRatios.remember(
+                        image.size.width / image.size.height, for: canonicalURL)
                 }
-                self.show(image, animated: true)
+                // No fade when the tile is only trading up to a larger copy of
+                // the picture it is already showing: there is nothing to
+                // reveal, and the fade reads as a flicker.
+                self.show(image, animated: !keepsImage)
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled, let self, self.item?.previewURL == url else { return }
+                guard !Task.isCancelled, let self, self.requestedURL == url else { return }
                 self.spinner.stopAnimating()
                 self.failureIcon.isHidden = isVideo
             }

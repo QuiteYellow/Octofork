@@ -3,6 +3,14 @@ import SwiftUI
 /// Aspect ratios measured from images that arrived without published
 /// dimensions, remembered for as long as the app runs.
 ///
+/// Keyed by the post's canonical media URL, deliberately not by the URL of
+/// the copy that was measured. A tile asks Reddit for a copy sized to the
+/// column it landed in, so the copy changes when the reader pinches -- and
+/// keyed by the copy, every tile that had measured its own shape would look
+/// that shape up under a key nothing had stored, fall back to the default
+/// ratio, and reflow the grid on every zoom. The shape of a picture is a
+/// property of the picture, not of which rung of the ladder it arrived on.
+///
 /// A tile drops its image when it scrolls out of view -- that is what keeps a
 /// long grid cheap -- so without somewhere to keep the shape, a tile coming
 /// back would forget how tall it was, fall back to the default ratio, and
@@ -47,21 +55,29 @@ struct GalleryMediaItem: Identifiable {
     var id: String { "\(post.id):\(page)" }
     var isVideo: Bool { post.isVideo || ["video", "gif", "embeddedVideo"].contains(post.mediaKind) }
 
-    /// The copy to draw in a grid tile.
+    /// The copy to draw in a grid tile `displayWidth` points wide.
     ///
     /// This was `url` -- Reddit's full-size image -- so a screenful of tiles
     /// fetched a screenful of uploaders' originals to draw each one a couple
     /// of hundred points wide. `url` itself is untouched, and is still what
     /// opening the tile hands to the viewer.
     ///
-    /// One property rather than a per-view choice, because `aspectRatio` keys
-    /// remembered shapes by this URL: a tile that measured one copy and drew
-    /// another would look its ratio up under a key nothing had stored.
-    @MainActor var previewURL: URL? {
+    /// It was also a property, at one fixed width, and the comment here said
+    /// why: `aspectRatio` keyed remembered shapes by this URL, so a tile that
+    /// measured one copy and drew another would look its ratio up under a key
+    /// nothing had stored. `GalleryTileRatios` is keyed by `url` now, which
+    /// no width can change, which is what frees this to follow the column the
+    /// tile actually landed in -- and it has to follow it: at one column a
+    /// tile is nearly the width of the screen, and the copy chosen for a
+    /// two-column grid is visibly soft blown up that far.
+    ///
+    /// The request is capped at `galleryTile`, which is the top of Reddit's
+    /// pre-made ladder. See that constant for what asking for more costs.
+    @MainActor func previewURL(displayWidth: CGFloat) -> URL? {
         guard !isVideo else { return post.thumbnailURL }
         return post.imageURL(
             page: page,
-            displayWidth: OctonautImageDisplayWidth.galleryTile,
+            displayWidth: min(displayWidth, OctonautImageDisplayWidth.galleryTile),
             scale: OctonautImageDisplayWidth.currentScale
         ) ?? url
     }
@@ -114,7 +130,7 @@ struct GalleryMediaItem: Identifiable {
             }
             return Self.videoFallbackAspectRatio
         }
-        if let url = previewURL, let remembered = GalleryTileRatios.ratio(for: url) {
+        if let remembered = GalleryTileRatios.ratio(for: url) {
             return Self.clamped(remembered)
         }
         // A gallery publishes a size per image, so every page knows its own

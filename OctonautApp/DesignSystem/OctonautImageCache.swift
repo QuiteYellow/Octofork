@@ -216,8 +216,20 @@ enum OctonautImageDisplayWidth {
     static let card: CGFloat = 430
     /// The square preview on a compact row. Matches its 70-point frame.
     static let compactThumbnail: CGFloat = 70
-    /// One tile of the gallery grid, at its narrowest.
-    static let galleryTile: CGFloat = 180
+    /// The widest copy one gallery tile ever asks for.
+    ///
+    /// Was 180 -- one tile of a two-column grid, which was the only width the
+    /// grid had. A tile now asks for a copy sized to the column it landed in,
+    /// between one column and six, and this caps that request.
+    ///
+    /// 360 points is 1080 pixels at 3x, which is where Reddit's pre-made
+    /// ladder tops out. The cap is not a quality judgement but a correctness
+    /// one: `PostCardModel.imageURL(page:displayWidth:scale:)` falls back to
+    /// the uploader's untouched original when no variant covers what it was
+    /// asked for, so a single-column tile asking for its full 1,155 pixels
+    /// would fetch a 4,000-pixel source -- exactly what choosing a copy by
+    /// width was introduced to stop.
+    static let galleryTile: CGFloat = 360
 
     /// The width to choose a copy for one page of a post's inline media.
     ///

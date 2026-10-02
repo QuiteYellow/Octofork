@@ -159,6 +159,37 @@ final class SettingsStore {
 
     var feedLayout: FeedLayout { didSet { persist(feedLayout.rawValue, key: Keys.feedLayout) } }
     var compactThumbnailSide: CompactThumbnailSide { didSet { persist(compactThumbnailSide.rawValue, key: Keys.compactThumbnailSide) } }
+    /// How many columns the gallery grid lays out, as the reader last pinched
+    /// it. Zero means they never have, and the grid should pick from its own
+    /// width.
+    ///
+    /// An absolute count rather than an offset from whatever a width would
+    /// pick on its own, because the two disagree the moment the width
+    /// changes: stored as "one step tighter than the default", a reader who
+    /// pinched to three columns on their phone would get five on an iPad.
+    /// They meant three. The grid narrows a count its width cannot carry,
+    /// so a choice made on a wider screen is clamped rather than refused.
+    ///
+    /// Zero is what keeps the phone's answer and the iPad's answer both
+    /// right before anyone has chosen: a flat default of 2 would be correct
+    /// on a phone and much too coarse on an iPad, and the only way to tell
+    /// "2 because nobody chose" from "2 because somebody did" is to not
+    /// store a number for the first case.
+    var galleryColumnCount: Int {
+        didSet {
+            let clampedValue = min(max(galleryColumnCount, 0), Self.maximumGalleryColumnCount)
+            guard galleryColumnCount == clampedValue else {
+                galleryColumnCount = clampedValue
+                return
+            }
+            persist(galleryColumnCount, key: Keys.galleryColumnCount)
+        }
+    }
+
+    /// The most columns a reader may pinch the gallery down to. Past this the
+    /// tiles stop being pictures and start being texture, on any screen the
+    /// app runs on.
+    static let maximumGalleryColumnCount = 6
     var useSplitViewOnIPad: Bool { didSet { persist(useSplitViewOnIPad, key: Keys.useSplitViewOnIPad) } }
     var showBottomNavigationOnLargeScreens: Bool { didSet { persist(showBottomNavigationOnLargeScreens, key: Keys.showBottomNavigationOnLargeScreens) } }
     var showCommunityHeader: Bool { didSet { persist(showCommunityHeader, key: Keys.showCommunityHeader) } }
@@ -385,6 +416,7 @@ final class SettingsStore {
 
         feedLayout = FeedLayout(rawValue: defaults.string(forKey: Keys.feedLayout) ?? "full") ?? .full
         compactThumbnailSide = CompactThumbnailSide(rawValue: defaults.string(forKey: Keys.compactThumbnailSide) ?? "left") ?? .left
+        galleryColumnCount = defaults.object(forKey: Keys.galleryColumnCount) as? Int ?? 0
         useSplitViewOnIPad = defaults.object(forKey: Keys.useSplitViewOnIPad) as? Bool ?? true
         showBottomNavigationOnLargeScreens = defaults.object(forKey: Keys.showBottomNavigationOnLargeScreens) as? Bool ?? false
         showCommunityHeader = defaults.object(forKey: Keys.showCommunityHeader) as? Bool ?? true
@@ -448,6 +480,7 @@ final class SettingsStore {
         communityFeedLayouts = [:]
         feedLayout = fresh.feedLayout
         compactThumbnailSide = fresh.compactThumbnailSide
+        galleryColumnCount = fresh.galleryColumnCount
         useSplitViewOnIPad = fresh.useSplitViewOnIPad
         showBottomNavigationOnLargeScreens = fresh.showBottomNavigationOnLargeScreens
         showCommunityHeader = fresh.showCommunityHeader
@@ -543,6 +576,7 @@ final class SettingsStore {
     private enum Keys {
         static let feedLayout = "appearance.feedLayout"
         static let compactThumbnailSide = "appearance.compactThumbnailSide"
+        static let galleryColumnCount = "appearance.galleryColumnCount"
         static let useSplitViewOnIPad = "appearance.useSplitViewOnIPad"
         static let showBottomNavigationOnLargeScreens = "appearance.showBottomNavigationOnLargeScreens"
         static let showCommunityHeader = "appearance.showCommunityHeader"
