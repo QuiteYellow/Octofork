@@ -63,6 +63,27 @@ final class GalleryFooterView: UICollectionReusableView {
     }
 }
 
+/// A collection view that says when its width changed.
+///
+/// `updateUIView` is not a geometry callback: SwiftUI runs it when the
+/// representable's *values* change, and a rotation changes none of them. The
+/// column count and the range of counts the width can carry both have to be
+/// re-resolved when the width moves, so something has to notice -- and the
+/// layout noticing is no help, because changing the count from inside a
+/// layout pass is how a layout loop starts.
+final class GalleryCollectionView: UICollectionView {
+    var onWidthChange: ((CGFloat) -> Void)?
+    private var lastWidth: CGFloat = 0
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard bounds.width != lastWidth else { return }
+        lastWidth = bounds.width
+        let width = bounds.width
+        Task { @MainActor [weak self] in self?.onWidthChange?(width) }
+    }
+}
+
 /// The gallery grid, on a recycling container.
 ///
 /// What this replaces was `LazyVStack` columns inside a `ScrollView`. A lazy
@@ -93,17 +114,27 @@ struct GalleryGridView: UIViewRepresentable {
     let blursNSFW: Bool
     let blursSpoilers: Bool
     let autoplays: Bool
+    /// The reader's column count, or zero for "they have never said", in
+    /// which case the grid answers from its own width.
+    let columns: Int
+    let haptics: Bool
     let footerState: GalleryFooterView.State
     let onOpen: (GalleryMediaItem) -> Void
     let onReachEnd: () -> Void
     let onRetry: () -> Void
     let onRefresh: () -> Void
+    /// A column count the reader just arrived at, to be remembered.
+    let onColumnsChange: (Int) -> Void
+    /// The counts this width can carry, so the toolbar can offer exactly
+    /// those. The grid is the only thing that knows -- it holds the spacing,
+    /// the insets and the tile-width floor the ceiling is derived from.
+    let onColumnRangeChange: (ClosedRange<Int>) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> UICollectionView {
+    func makeUIView(context: Context) -> GalleryCollectionView {
         let coordinator = context.coordinator
-        let view = UICollectionView(frame: .zero, collectionViewLayout: coordinator.layout)
+        let view = GalleryCollectionView(frame: .zero, collectionViewLayout: coordinator.layout)
         view.backgroundColor = .clear
         view.alwaysBounceVertical = true
         view.dataSource = coordinator
@@ -118,7 +149,17 @@ struct GalleryGridView: UIViewRepresentable {
         refresh.addTarget(coordinator, action: #selector(Coordinator.handleRefresh), for: .valueChanged)
         view.refreshControl = refresh
 
+        // Nothing to arbitrate with the scroll view's pan: the grid does not
+        // use `UIScrollView` zooming, so there is no second recognizer with a
+        // claim on two fingers.
+        view.addGestureRecognizer(
+            UIPinchGestureRecognizer(
+                target: coordinator, action: #selector(Coordinator.handlePinch)))
+
         coordinator.collectionView = view
+        view.onWidthChange = { [weak coordinator] _ in
+            coordinator?.widthChanged()
+        }
         coordinator.layout.aspectRatio = { [weak coordinator] index in
             guard let coordinator, coordinator.items.indices.contains(index) else {
                 return GalleryMediaItem.fallbackAspectRatio
@@ -128,12 +169,12 @@ struct GalleryGridView: UIViewRepresentable {
         return view
     }
 
-    func updateUIView(_ view: UICollectionView, context: Context) {
+    func updateUIView(_ view: GalleryCollectionView, context: Context) {
         context.coordinator.parent = self
         context.coordinator.apply(items: items, footer: footerState)
     }
 
-    static func dismantleUIView(_ view: UICollectionView, coordinator: Coordinator) {
+    static func dismantleUIView(_ view: GalleryCollectionView, coordinator: Coordinator) {
         coordinator.tearDown()
     }
 
@@ -155,6 +196,12 @@ struct GalleryGridView: UIViewRepresentable {
         /// The parent values that decide what a tile shows and whether it
         /// plays, as of the last `apply`. Nil until the first one.
         private var lastInputs: Inputs?
+        /// Prepared when a pinch begins, so the tap confirming a column step
+        /// is not also the thing warming the Taptic Engine up.
+        private var feedback: UIImpactFeedbackGenerator?
+        /// The last range handed to the parent, so a report that has not
+        /// changed does not bounce SwiftUI state on every update.
+        private var reportedRange: ClosedRange<Int>?
 
         /// Everything outside the item list that changes a tile's behaviour.
         ///
@@ -218,7 +265,34 @@ struct GalleryGridView: UIViewRepresentable {
         /// screen always gives its player back, however fast the grid is
         /// moving, so a fling frees players rather than hoarding them.
         private static let maximumPlaybackScrollSpeed: CGFloat = 1400
+
+        /// The narrowest tile the grid will lay out *on its own*, which is to
+        /// say the widest tile a default column count is allowed to produce.
         private static let minimumTileWidth: CGFloat = 170
+
+        /// The narrowest tile the reader may pinch down to.
+        ///
+        /// Two floors because the one constant was answering two questions,
+        /// and that is exactly why a phone could not show three columns: at
+        /// 170 points, `Int(389 / 174)` is 2 on a 393-point screen, so the
+        /// count the width *suggested* was also the count it *allowed*. A
+        /// reader who asks for three gets 125-point tiles there, which is
+        /// wider than the system photo grid's own default -- the floor for a
+        /// count somebody chose can sit well below the floor for one the app
+        /// picks on their behalf.
+        private static let minimumPinchedTileWidth: CGFloat = 110
+
+        /// What one column step costs in pinch travel, as a power of two of
+        /// the gesture's scale.
+        ///
+        /// A power of two rather than the raw scale so that a step costs the
+        /// same pinch in both directions: two columns to three is a factor of
+        /// 0.67 and coming back is a factor of 1.5, and no single threshold on
+        /// a linear scale can be fair to both. 0.45 is a factor of about 1.37
+        /// -- more travel than an off-axis swipe or a two-finger scroll
+        /// produces by accident, and little enough that one deliberate pinch
+        /// crosses two steps without the reader letting go.
+        private static let columnStepTravel: CGFloat = 0.45
 
         init(_ parent: GalleryGridView) {
             self.parent = parent
@@ -231,7 +305,7 @@ struct GalleryGridView: UIViewRepresentable {
 
         func apply(items newItems: [GalleryMediaItem], footer newFooter: GalleryFooterView.State) {
             guard let collectionView else { return }
-            updateColumnCount(for: collectionView.bounds.width)
+            applyColumnPreference(in: collectionView)
 
             let footerChanged = newFooter != footer
             footer = newFooter
@@ -311,6 +385,7 @@ struct GalleryGridView: UIViewRepresentable {
         /// without disturbing their place or their images.
         private func reconfigureVisibleCells() {
             guard let collectionView else { return }
+            let displayWidth = layout.tileWidth
             for indexPath in collectionView.indexPathsForVisibleItems {
                 guard let cell = collectionView.cellForItem(at: indexPath) as? GalleryTileCell,
                       items.indices.contains(indexPath.item) else { continue }
@@ -318,7 +393,8 @@ struct GalleryGridView: UIViewRepresentable {
                 cell.configure(
                     with: item,
                     blurred: item.post.isSensitive(
-                        blurringNSFW: parent.blursNSFW, blurringSpoilers: parent.blursSpoilers))
+                        blurringNSFW: parent.blursNSFW, blurringSpoilers: parent.blursSpoilers),
+                    displayWidth: displayWidth)
             }
         }
 
@@ -331,12 +407,238 @@ struct GalleryGridView: UIViewRepresentable {
             }
         }
 
-        private func updateColumnCount(for width: CGFloat) {
+        // MARK: - Columns
+
+        /// The grid got wider or narrower -- a rotation, an iPad split view
+        /// dragged. Both the resolved count and the range the toolbar offers
+        /// are answers about a width, so both are stale.
+        func widthChanged() {
+            guard let collectionView else { return }
+            applyColumnPreference(in: collectionView)
+        }
+
+        /// Brings the grid to the reader's column count, or to the width's own
+        /// answer when they have never chosen one.
+        ///
+        /// Called from `apply`, which SwiftUI runs for any reason at all, so it
+        /// has to be idempotent when nothing moved. It also has to be here
+        /// rather than only on the gesture: the toolbar menu writes the
+        /// setting, and the new value arrives back through exactly this path.
+        private func applyColumnPreference(in collectionView: UICollectionView) {
+            let width = collectionView.bounds.width
             guard width > 0 else { return }
+            report(columnRange(forWidth: width))
+            setColumns(
+                parent.columns > 0 ? parent.columns : defaultColumns(forWidth: width),
+                anchoredAt: nil,
+                notifying: false)
+        }
+
+        /// How many columns of at least `minimum` points of tile fit in
+        /// `width`.
+        private func columnsFitting(tileWidth minimum: CGFloat, in width: CGFloat) -> Int {
             let usable = width - layout.horizontalInset * 2 + layout.spacing
-            let count = max(2, Int(usable / (Self.minimumTileWidth + layout.spacing)))
-            guard count != layout.columnCount else { return }
-            layout.columnCount = count
+            return max(1, Int(usable / (minimum + layout.spacing)))
+        }
+
+        /// The column counts this width can carry.
+        func columnRange(forWidth width: CGFloat) -> ClosedRange<Int> {
+            let ceiling = min(
+                SettingsStore.maximumGalleryColumnCount,
+                columnsFitting(tileWidth: Self.minimumPinchedTileWidth, in: width))
+            return 1...max(1, ceiling)
+        }
+
+        private func clampColumns(_ requested: Int, toWidth width: CGFloat) -> Int {
+            let range = columnRange(forWidth: width)
+            return min(max(requested, range.lowerBound), range.upperBound)
+        }
+
+        /// What to lay out at when the reader has never said.
+        ///
+        /// The width's own answer, which is two on every phone and more on an
+        /// iPad -- and the reason the stored preference has a "never said"
+        /// value at all. Storing a flat 2 instead would be right on a phone
+        /// and much too coarse on a 1,024-point screen, with no way left to
+        /// tell a 2 somebody chose from a 2 nobody did.
+        private func defaultColumns(forWidth width: CGFloat) -> Int {
+            max(2, columnsFitting(tileWidth: Self.minimumTileWidth, in: width))
+        }
+
+        /// Lays the grid out at `columns`, keeping the tile under `point`
+        /// where it is on screen.
+        ///
+        /// The offset correction is the whole gesture. Two columns to three
+        /// cuts the content height by about a third, and nothing moves
+        /// `contentOffset` on its own -- so a reader twelve thousand points
+        /// into a feed is dropped somewhere unrelated, which reads as the grid
+        /// having lost their place rather than having changed shape.
+        ///
+        /// It is done here rather than from the layout's
+        /// `targetContentOffset(forProposedContentOffset:)`, which is the hook
+        /// that looks built for it: that one is called for a layout
+        /// *replacement* or an animated transition, not for the plain
+        /// invalidation this does, so it would never run.
+        ///
+        /// Nothing is animated, and that is a decision rather than an
+        /// omission. Two column counts of a waterfall layout are not affine
+        /// versions of each other -- the packing differs, so almost every tile
+        /// changes both column and height -- which leaves nothing meaningful
+        /// to interpolate. The anchor is what makes the change legible: the
+        /// tile under the reader's fingers does not move, so the grid reads as
+        /// having re-flowed around it.
+        /// `requested` is clamped into what this width can carry, here rather
+        /// than at each call site, because every route in -- the pinch, the
+        /// zoom action, a stored preference made on a wider screen -- can ask
+        /// for a count that does not exist. An unclamped zero is not merely
+        /// out of range: it persists as "automatic", and it leaves
+        /// `columnHeights.count` at one against a `columnCount` of zero, which
+        /// `prepare()` reads as a changed column count and resets the whole
+        /// placement for, on every pass, for as long as the grid is open.
+        @discardableResult
+        private func setColumns(
+            _ requested: Int, anchoredAt point: CGPoint?, notifying: Bool
+        ) -> Bool {
+            guard let collectionView else { return false }
+            let columns = clampColumns(requested, toWidth: collectionView.bounds.width)
+            guard columns != layout.columnCount else { return false }
+
+            // Nothing on screen yet: no place to keep, and no reason to force
+            // a layout pass to find one. This is the path the first `apply`
+            // takes, and that one runs inside `updateUIView`.
+            guard layout.placedCount > 0, !collectionView.indexPathsForVisibleItems.isEmpty else {
+                layout.columnCount = columns
+                layout.invalidateLayout()
+                if notifying { notifyColumns(columns) }
+                return true
+            }
+
+            let anchor = anchor(near: point, in: collectionView)
+            layout.columnCount = columns
+            layout.invalidateLayout()
+            // Forces `prepare`, so the anchor has a new frame to be read on
+            // the next line. Deliberately once, on commit: placement is O(n)
+            // over the whole paged-out list, which is nothing for a gesture
+            // and ruinous per frame -- which is also why the recognizer
+            // commits on a threshold rather than tracking continuously.
+            collectionView.layoutIfNeeded()
+            if let anchor { restore(anchor, in: collectionView) }
+            // Tiles now sit in a column of a different width, so the copy
+            // worth fetching has changed. Cheap in the common case: Reddit's
+            // ladder is coarse enough that most steps leave a tile on the rung
+            // it already had, and the cell returns early for those.
+            reconfigureVisibleCells()
+            if notifying { notifyColumns(columns) }
+            schedulePlayerUpdate(immediately: true)
+            return true
+        }
+
+        /// Resolves the stored preference against the current width, for a
+        /// test that has no SwiftUI update to arrive through.
+        func applyStoredColumnsForTesting() {
+            guard let collectionView else { return }
+            applyColumnPreference(in: collectionView)
+        }
+
+        /// One column step, from the pinch or from VoiceOver's zoom action.
+        @discardableResult
+        func step(columns step: Int) -> Bool {
+            setColumns(layout.columnCount + step, anchoredAt: nil, notifying: true)
+        }
+
+        /// The tile to hold still across a column change, and where on screen
+        /// to hold it: the one under the reader's fingers, or failing that
+        /// whatever sits nearest the top of the viewport.
+        private func anchor(
+            near point: CGPoint?, in collectionView: UICollectionView
+        ) -> (index: Int, distanceFromTop: CGFloat)? {
+            // What the reader sees as the top of the grid, which is below the
+            // navigation bar rather than at the content origin.
+            let visualTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+            let nearestVisible = collectionView.indexPathsForVisibleItems
+                .compactMap { path -> (IndexPath, CGFloat)? in
+                    guard let frame = layout.layoutAttributesForItem(at: path)?.frame else {
+                        return nil
+                    }
+                    return (path, frame.minY)
+                }
+                .min { abs($0.1 - visualTop) < abs($1.1 - visualTop) }?
+                .0
+            guard let candidate = point.flatMap({ collectionView.indexPathForItem(at: $0) })
+                ?? nearestVisible,
+                  let frame = layout.layoutAttributesForItem(at: candidate)?.frame else {
+                return nil
+            }
+            // Measured against the raw offset, not the visual top, so putting
+            // it back is independent of an inset that may have changed in
+            // between.
+            return (candidate.item, frame.minY - collectionView.contentOffset.y)
+        }
+
+        /// Puts the anchor tile back where it was on screen, now that it has a
+        /// new frame.
+        private func restore(
+            _ anchor: (index: Int, distanceFromTop: CGFloat), in collectionView: UICollectionView
+        ) {
+            guard let frame = layout.layoutAttributesForItem(
+                at: IndexPath(item: anchor.index, section: 0))?.frame else { return }
+            let insets = collectionView.adjustedContentInset
+            let lowest = -insets.top
+            // `max` with the floor, because a grid shorter than its viewport
+            // has a ceiling below its floor and the clamp below would invert.
+            let highest = max(
+                lowest,
+                layout.collectionViewContentSize.height + insets.bottom
+                    - collectionView.bounds.height)
+            let y = min(max(frame.minY - anchor.distanceFromTop, lowest), highest)
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: y), animated: false)
+        }
+
+        private func notifyColumns(_ columns: Int) {
+            if parent.haptics {
+                (feedback ?? UIImpactFeedbackGenerator(style: .light)).impactOccurred()
+            }
+            let notify = parent.onColumnsChange
+            // A hop, because this is reachable from `apply` -- and writing
+            // SwiftUI state from inside a view update is the one reliable way
+            // to make SwiftUI complain about it.
+            Task { @MainActor in notify(columns) }
+        }
+
+        private func report(_ range: ClosedRange<Int>) {
+            guard range != reportedRange else { return }
+            reportedRange = range
+            let notify = parent.onColumnRangeChange
+            Task { @MainActor in notify(range) }
+        }
+
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            guard let collectionView else { return }
+            switch gesture.state {
+            case .began:
+                feedback = parent.haptics ? UIImpactFeedbackGenerator(style: .light) : nil
+                feedback?.prepare()
+            case .changed:
+                let travel = log2(max(gesture.scale, 0.01))
+                guard abs(travel) >= Self.columnStepTravel else { return }
+                // Re-baselined before acting, and unconditionally. A gesture
+                // left sitting past the threshold would otherwise fire on
+                // every frame for the rest of the pinch; resetting even when
+                // the step is refused is what gives the ends of the range a
+                // dead stop instead of a buzz per frame.
+                gesture.scale = 1
+                // Pinching out magnifies, which means larger tiles, which
+                // means fewer columns.
+                setColumns(
+                    layout.columnCount + (travel > 0 ? -1 : 1),
+                    anchoredAt: gesture.location(in: collectionView),
+                    notifying: true)
+            case .ended, .cancelled, .failed:
+                feedback = nil
+            default:
+                break
+            }
         }
 
         @objc func handleRefresh() {
@@ -367,7 +669,9 @@ struct GalleryGridView: UIViewRepresentable {
             tile.configure(
                 with: item,
                 blurred: item.post.isSensitive(
-                    blurringNSFW: parent.blursNSFW, blurringSpoilers: parent.blursSpoilers))
+                    blurringNSFW: parent.blursNSFW, blurringSpoilers: parent.blursSpoilers),
+                displayWidth: layout.tileWidth)
+            tile.onZoom = { [weak self] step in self?.step(columns: step) ?? false }
             return cell
         }
 

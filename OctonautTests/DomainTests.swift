@@ -33,13 +33,13 @@ final class DomainTests: XCTestCase {
         post.mediaURL = URL(string: "https://i.redd.it/full.jpg")!
         post.thumbnailURL = URL(string: "https://preview.redd.it/thumb.jpg")!
         XCTAssertEqual(
-            GalleryMediaItem.items(from: [post]).first?.previewURL,
+            GalleryMediaItem.items(from: [post]).first?.previewURL(displayWidth: 180),
             post.mediaURL,
             "with no ladder published, a tile falls back to the full-size image"
         )
         post.mediaKind = "video"
         XCTAssertEqual(
-            GalleryMediaItem.items(from: [post]).first?.previewURL,
+            GalleryMediaItem.items(from: [post]).first?.previewURL(displayWidth: 180),
             post.thumbnailURL
         )
         post.hasMedia = false
@@ -774,6 +774,56 @@ final class DomainTests: XCTestCase {
     }
 
     @MainActor
+    func testGalleryTileAsksForACopySizedToTheColumnItLandedIn() throws {
+        var post = galleryPost(id: "p1", kind: "image", url: "https://i.redd.it/full.jpg")
+        post.imageVariants = [[108, 320, 640, 1080].map { width in
+            ImageVariant(
+                url: URL(string: "https://preview.redd.it/x.jpg?width=\(width)")!,
+                width: width, height: width)
+        }]
+        let item = try XCTUnwrap(GalleryMediaItem.items(from: [post]).first)
+
+        // Three columns on a phone is a ~125-point tile, or 375 pixels at 3x.
+        XCTAssertEqual(
+            item.previewURL(displayWidth: 125)?.absoluteString.contains("width=640"), true)
+        // One column is nearly the whole screen. Asking for the copy a
+        // two-column grid chose is what made a single-column grid soft.
+        XCTAssertEqual(
+            item.previewURL(displayWidth: 385)?.absoluteString.contains("width=1080"), true)
+        // And the request is capped there. Past the top of Reddit's ladder
+        // `imageURL` finds nothing covering the ask and falls back to the
+        // uploader's untouched original, so the cap is a correctness rule
+        // rather than a quality one.
+        XCTAssertEqual(
+            item.previewURL(displayWidth: 4000)?.absoluteString.contains("width=1080"), true)
+    }
+
+    @MainActor
+    func testAMeasuredTileShapeSurvivesAChangeOfColumnWidth() throws {
+        var post = galleryPost(id: "ratio", kind: "image", url: "https://i.redd.it/ratio.jpg")
+        post.imageVariants = [[108, 640, 1080].map { width in
+            ImageVariant(
+                url: URL(string: "https://preview.redd.it/ratio.jpg?width=\(width)")!,
+                width: width, height: width)
+        }]
+        let item = try XCTUnwrap(GalleryMediaItem.items(from: [post]).first)
+
+        // What a tile does when its image arrives and nothing was published:
+        // it files the shape it measured.
+        GalleryTileRatios.remember(1.5, for: item.url)
+        XCTAssertEqual(item.aspectRatio, 1.5)
+
+        // The reader pinches, so the tile fetches a different rung.
+        XCTAssertNotEqual(
+            item.previewURL(displayWidth: 125), item.previewURL(displayWidth: 385))
+
+        // Keyed by the copy rather than by the picture, the shape would be
+        // lost right here -- every measured tile would fall back to the
+        // default ratio and the whole grid would reflow on every zoom.
+        XCTAssertEqual(item.aspectRatio, 1.5)
+    }
+
+    @MainActor
     func testGalleryTileFallsBackWhenNoRatioIsPublished() {
         let unknown = galleryPost(id: "p1", kind: "image", url: "https://i.redd.it/x.jpg")
         let item = GalleryMediaItem.items(from: [unknown]).first
@@ -792,8 +842,8 @@ final class DomainTests: XCTestCase {
         // Reddit's poster for a video is a crop of its own proportions.
         // Measuring it must not resize the tile, or the still arriving moves
         // the grid and the video then letterboxes inside the wrong box.
-        if let preview = item?.previewURL {
-            GalleryTileRatios.remember(0.5, for: preview)
+        if let item {
+            GalleryTileRatios.remember(0.5, for: item.url)
         }
 
         XCTAssertEqual(item?.aspectRatio, 16.0 / 9.0)
@@ -1777,5 +1827,72 @@ final class DomainTests: XCTestCase {
         coordinator.releaseAudio(for: first)
         XCTAssertEqual(activations, 2)
         XCTAssertEqual(deactivations, 2)
+    }
+}
+
+/// The gallery grid's column arithmetic.
+///
+/// Worth testing away from the gesture, because the counts a width can carry
+/// are what the pinch, the toolbar menu and a stored preference all resolve
+/// against -- and because the old single tile-width floor made three columns
+/// unreachable on a phone, which no amount of gesture tuning would have fixed.
+@MainActor
+final class GalleryColumnTests: XCTestCase {
+    private func makeCoordinator() -> GalleryGridView.Coordinator {
+        let grid = GalleryGridView(
+            items: [], blursNSFW: false, blursSpoilers: false, autoplays: false,
+            columns: 0, haptics: false, footerState: .none,
+            onOpen: { _ in }, onReachEnd: {}, onRetry: {}, onRefresh: {},
+            onColumnsChange: { _ in }, onColumnRangeChange: { _ in })
+        return GalleryGridView.Coordinator(grid)
+    }
+
+    func testAPhoneCanReachThreeColumnsAndNoMore() {
+        let range = makeCoordinator().columnRange(forWidth: 393)
+
+        // The whole reason the tile-width floor had to split in two. At the
+        // old single floor of 170 points this ceiling was 2, so a reader on a
+        // phone could not ask for three columns however they pinched.
+        XCTAssertEqual(range, 1...3)
+    }
+
+    func testAnIPadOffersMoreColumnsButStopsAtTheStoredCeiling() {
+        let coordinator = makeCoordinator()
+
+        // 1,024 points fits nine 110-point tiles, but past six the tiles stop
+        // being pictures, so the setting's own ceiling is what binds.
+        XCTAssertEqual(
+            coordinator.columnRange(forWidth: 1024).upperBound,
+            SettingsStore.maximumGalleryColumnCount)
+        XCTAssertGreaterThan(
+            coordinator.columnRange(forWidth: 1024).upperBound,
+            coordinator.columnRange(forWidth: 393).upperBound)
+    }
+
+    func testAStepIsRefusedAtEitherEndOfTheRange() {
+        let coordinator = makeCoordinator()
+        let view = GalleryCollectionView(
+            frame: CGRect(x: 0, y: 0, width: 393, height: 800),
+            collectionViewLayout: coordinator.layout)
+        coordinator.collectionView = view
+
+        // Phones start at two of a possible one-to-three.
+        coordinator.applyStoredColumnsForTesting()
+        XCTAssertEqual(coordinator.layout.columnCount, 2)
+
+        XCTAssertTrue(coordinator.step(columns: -1))
+        XCTAssertEqual(coordinator.layout.columnCount, 1)
+
+        // The end of the range is a dead stop, not a wrap and not a zero. A
+        // zero would persist as "automatic" and would leave `prepare()`
+        // resetting the whole placement on every pass.
+        XCTAssertFalse(coordinator.step(columns: -1))
+        XCTAssertEqual(coordinator.layout.columnCount, 1)
+
+        XCTAssertTrue(coordinator.step(columns: 1))
+        XCTAssertTrue(coordinator.step(columns: 1))
+        XCTAssertEqual(coordinator.layout.columnCount, 3)
+        XCTAssertFalse(coordinator.step(columns: 1))
+        XCTAssertEqual(coordinator.layout.columnCount, 3)
     }
 }

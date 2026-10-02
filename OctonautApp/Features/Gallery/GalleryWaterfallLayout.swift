@@ -53,6 +53,24 @@ final class GalleryWaterfallLayout: UICollectionViewLayout {
     /// whether a newly measured ratio belongs to a tile already placed.
     var placedCount: Int { placed.count }
 
+    /// The width one tile is laid out at.
+    ///
+    /// Exposed because it is also the width a tile asks Reddit for a copy at,
+    /// and the cell cannot read it from its own bounds: the collection view
+    /// applies the layout attributes' frame *after* `cellForItemAt` returns,
+    /// so during configuration a recycled cell is still the size of whatever
+    /// tile had it last.
+    ///
+    /// Falls back to the collection view's own width before the first
+    /// `prepare` has recorded one, so a cell configured early asks for a copy
+    /// sized to roughly the right tile rather than to a single point.
+    var tileWidth: CGFloat {
+        let width = layoutWidth > 0 ? layoutWidth : (collectionView?.bounds.width ?? 0)
+        let columns = max(1, columnCount)
+        let available = width - horizontalInset * 2 - spacing * CGFloat(columns - 1)
+        return max(1, (available / CGFloat(columns)).rounded(.down))
+    }
+
     /// Room kept below the tiles for the status footer -- "Loading more", or
     /// the end of the listing. Zero hides it.
     var footerHeight: CGFloat = 0
@@ -174,9 +192,7 @@ final class GalleryWaterfallLayout: UICollectionViewLayout {
         if columnHeights.count != columnCount {
             columnHeights = Array(repeating: 0, count: max(1, columnCount))
         }
-        let columns = max(1, columnCount)
-        let available = layoutWidth - horizontalInset * 2 - spacing * CGFloat(columns - 1)
-        let tileWidth = max(1, (available / CGFloat(columns)).rounded(.down))
+        let tileWidth = self.tileWidth
 
         for index in start..<end {
             let column = shortestColumn()

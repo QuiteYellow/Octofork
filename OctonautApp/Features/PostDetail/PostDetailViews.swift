@@ -389,6 +389,11 @@ struct GalleryView: View {
     @State private var sectionNextPage: String?
     @State private var sectionState: OctonautLoadState = .idle
     @State private var isLoadingMore = false
+    /// The column counts this screen's width can carry, reported by the grid
+    /// -- it owns the spacing, the insets and the tile-width floor they are
+    /// derived from, so asking it is the only way to offer exactly the counts
+    /// a pinch could actually reach.
+    @State private var availableColumns: ClosedRange<Int> = 1...3
 
     private var blursSensitiveMedia: Bool {
         dependencies.settings.blurNSFWMedia || dependencies.settings.blurSpoilers
@@ -494,6 +499,9 @@ struct GalleryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    gridSizeMenu
+                }
+                ToolbarItem(placement: .topBarTrailing) {
                     if blursSensitiveMedia {
                         Button {
                             revealsSensitiveMedia.toggle()
@@ -532,14 +540,55 @@ struct GalleryView: View {
                 blursNSFW: dependencies.settings.blurNSFWMedia && !revealsSensitiveMedia,
                 blursSpoilers: dependencies.settings.blurSpoilers && !revealsSensitiveMedia,
                 autoplays: autoplaysInPlace,
+                columns: dependencies.settings.galleryColumnCount,
+                haptics: dependencies.settings.gestureHaptics,
                 footerState: footerState,
                 onOpen: { selectedItem = $0 },
                 onReachEnd: { Task { await loadMore() } },
                 onRetry: { Task { await load(forceRefresh: true) } },
-                onRefresh: { Task { await load(forceRefresh: true) } }
+                onRefresh: { Task { await load(forceRefresh: true) } },
+                onColumnsChange: { dependencies.settings.galleryColumnCount = $0 },
+                onColumnRangeChange: { availableColumns = $0 }
             )
             .ignoresSafeArea(edges: .bottom)
         }
+    }
+
+    /// The column count as a control rather than a gesture.
+    ///
+    /// Not a nicety: a pinch is invisible, it is the one thing in the grid
+    /// with no affordance at all, and it is unavailable to a reader using
+    /// VoiceOver -- where the system's own zoom gesture is what two fingers
+    /// mean. The tiles offer VoiceOver's zoom actions for the same reason.
+    /// Both routes end in the same setting.
+    @ViewBuilder
+    private var gridSizeMenu: some View {
+        Menu {
+            Picker("Grid size", selection: columnSelection) {
+                Text("Automatic").tag(0)
+                ForEach(Array(availableColumns), id: \.self) { count in
+                    Text(count == 1 ? "1 column" : "\(count) columns").tag(count)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Label("Grid size", systemImage: "square.grid.2x2")
+        }
+        .accessibilityLabel("Grid size")
+    }
+
+    /// Reads through to the setting, and narrows a stored count this screen
+    /// cannot carry so the menu never shows a tick next to an option the grid
+    /// has silently overridden.
+    private var columnSelection: Binding<Int> {
+        Binding(
+            get: {
+                let stored = dependencies.settings.galleryColumnCount
+                guard stored > 0 else { return 0 }
+                return min(max(stored, availableColumns.lowerBound), availableColumns.upperBound)
+            },
+            set: { dependencies.settings.galleryColumnCount = $0 }
+        )
     }
 
     @ViewBuilder
