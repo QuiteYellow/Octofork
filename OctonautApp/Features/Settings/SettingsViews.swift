@@ -448,6 +448,12 @@ struct SettingsDetailView: View {
 
     private var advanced: some View {
         Group {
+#if OCTOFORK_DEV_ADDIN
+            // Supplied by an optional out-of-tree add-in, whose overlay spec
+            // only one local variant includes. Without the flag this file
+            // compiles to exactly what upstream has.
+            OctoforkAddinSettingsSection()
+#endif
             Section("Intelligence") {
                 LabeledContent("Summary provider", value: dependencies.settings.summaryProvider.title)
                 LabeledContent("On-device model", value: intelligenceAvailability == .available ? "Available" : "Unavailable")
