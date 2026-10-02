@@ -94,7 +94,7 @@ struct OctonautTabsView: View {
         self.reddit = reddit
 #if DEBUG
         let screenshot = ProcessInfo.processInfo.environment["OCTONAUT_SCREENSHOT"]
-        _selectedTab = State(initialValue: ["settings", "theme"].contains(screenshot) ? .settings : .posts)
+        _selectedTab = State(initialValue: ["settings", "theme", "advanced"].contains(screenshot) ? .settings : .posts)
         let path: [FeatureRoute]
         switch screenshot {
         case "feeds": path = []
@@ -106,7 +106,16 @@ struct OctonautTabsView: View {
         default: path = [.feed(.home)]
         }
         _postsRouter = State(initialValue: OctonautFeatureRouter(path: path))
-        _settingsRouter = State(initialValue: OctonautFeatureRouter(path: screenshot == "theme" ? [.settings(.theme)] : []))
+        // Every settings detail screen is a push behind a NavigationLink, so
+        // `settings` alone only ever shows the list. These are the two that
+        // have something to look at: the theme picker, and Advanced.
+        let settingsPath: [FeatureRoute]
+        switch screenshot {
+        case "theme": settingsPath = [.settings(.theme)]
+        case "advanced": settingsPath = [.settings(.advanced)]
+        default: settingsPath = []
+        }
+        _settingsRouter = State(initialValue: OctonautFeatureRouter(path: settingsPath))
 #else
         _selectedTab = State(initialValue: .posts)
         _postsRouter = State(initialValue: OctonautFeatureRouter(path: [.feed(.home)]))
