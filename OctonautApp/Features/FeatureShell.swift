@@ -99,6 +99,10 @@ struct OctonautTabsView: View {
         switch screenshot {
         case "feeds": path = []
         case "detail": path = [.feed(.home), .post(.screenshotCoast)]
+        // `OCTONAUT_SCREENSHOT=gallery` already loads a synthetic corpus, but
+        // nothing opened the grid on it -- and the grid is behind a menu, so
+        // without this there is no way to see one from a simulator at all.
+        case "gallery": path = [.feed(.home), .gallery(.home)]
         default: path = [.feed(.home)]
         }
         _postsRouter = State(initialValue: OctonautFeatureRouter(path: path))

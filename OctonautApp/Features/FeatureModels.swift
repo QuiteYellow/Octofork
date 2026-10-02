@@ -158,7 +158,63 @@ struct PostCardModel: Identifiable, Hashable, Sendable {
         mediaKind: "gallery",
         galleryURLs: [URL(string: "octonaut-screenshot://coast")!, URL(string: "octonaut-screenshot://cat")!]
     )
+    /// A local clip for corpus item `index`, cycling through whatever the
+    /// harness dropped in Documents. Falls back to an unresolvable URL so a
+    /// run without clips still exercises the never-loads path.
+    static func corpusVideoURL(_ index: Int) -> URL {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        if let documents {
+            let candidate = documents.appendingPathComponent("corpus-video-\(index % 60).mp4")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return URL(string: "https://v.invalid/corpus-\(index).mp4")!
+    }
+
+    /// A corpus for measuring the feed and the gallery. Scaffolding for item M.
+    ///
+    /// Shapes span the 9:16...16:9 clamp and overrun it at both ends, so the
+    /// crop path is exercised as well as the fit.
+    /// `OCTONAUT_CORPUS_VIDEO_EVERY=1` makes every row video, which is how a
+    /// concurrent-decoder ceiling gets tested.
+    static func screenshotGalleryCorpus(count: Int) -> [PostCardModel] {
+        let ratios: [CGFloat] = [0.3, 0.5625, 0.75, 1.0, 1.33, 1.5, 1.78, 2.6]
+        let videoEvery = ProcessInfo.processInfo.environment["OCTONAUT_CORPUS_VIDEO_EVERY"]
+            .flatMap(Int.init).map { max(1, $0) } ?? 3
+        return (0..<count).map { index in
+            let ratio = ratios[index % ratios.count]
+            let isVideo = index % videoEvery == videoEvery - 1
+            let height = 600
+            let width = Int((CGFloat(height) * ratio).rounded())
+            var post = PostCardModel(
+                id: "t3_corpus-\(index)",
+                community: "measure",
+                author: "probe",
+                title: "Corpus item \(index)",
+                body: "",
+                score: index,
+                comments: 0,
+                age: "1h",
+                vote: 0,
+                isSaved: false,
+                isNSFW: false,
+                isSpoiler: false,
+                isSticky: false,
+                isVideo: isVideo,
+                hasMedia: true,
+                mediaTitle: isVideo ? "Video" : "Image",
+                shareURL: URL(string: "https://example.invalid/corpus/\(index)")!,
+                mediaURL: isVideo
+                    ? Self.corpusVideoURL(index)
+                    : URL(string: "octonaut-screenshot://\(width)x\(height)-\(index)")!,
+                mediaKind: isVideo ? "video" : "image"
+            )
+            post.mediaAspectRatio = ratio
+            post.thumbnailURL = URL(string: "octonaut-screenshot://\(width)x\(height)-\(index)")
+            return post
+        }
+    }
 #endif
+
 
     var isSensitive: Bool { isNSFW || isSpoiler }
 
@@ -1323,7 +1379,17 @@ final class OctonautFeatureStore {
         }
         if screenshotMode {
 #if DEBUG
-            posts = [.screenshotCat, .screenshotCoast, .sample]
+            // The corpus serves the feed as well as the grid: asking whether a
+            // container retains its rows needs a list deep enough to scroll
+            // past, and the three fixture posts are not.
+            let requested = ProcessInfo.processInfo.environment["OCTONAUT_CORPUS"]
+            if requested != nil
+                || ProcessInfo.processInfo.environment["OCTONAUT_SCREENSHOT"] == "gallery" {
+                posts = PostCardModel.screenshotGalleryCorpus(
+                    count: requested.flatMap(Int.init) ?? 300)
+            } else {
+                posts = [.screenshotCat, .screenshotCoast, .sample]
+            }
             comments = [
                 CommentCardModel(
                     id: "t1_coast-1", author: "morning_light",

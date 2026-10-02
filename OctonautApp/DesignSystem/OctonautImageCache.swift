@@ -274,6 +274,16 @@ enum OctonautImageCache {
         if let image = cachedImage(for: url) {
             return image
         }
+#if DEBUG
+        // Measurement scaffolding: the bundled fixture PNGs are not in the app
+        // bundle, so a corpus tile asks for a bitmap of a given size and gets
+        // one drawn here. Decoded and held exactly like a fetched one.
+        if let synthesized = synthesizedFixture(for: url) {
+            decodedImages.setObject(
+                synthesized, forKey: url as NSURL, cost: synthesized.decodedByteCount)
+            return synthesized
+        }
+#endif
         // A caller that joins an in-flight decode inherits whatever priority
         // started it. Deliberate: the alternative is cancelling work already
         // under way to restart it a notch higher, which costs more than the
@@ -386,6 +396,35 @@ enum OctonautImageCache {
 
         return UIImage(cgImage: cgImage)
     }
+
+#if DEBUG
+    /// Draws a fixture bitmap for `octonaut-screenshot://<w>x<h>-<n>`.
+    static func synthesizedFixture(for url: URL) -> UIImage? {
+        guard url.scheme == "octonaut-screenshot", let host = url.host else { return nil }
+        let parts = host.split(separator: "-")
+        guard parts.count == 2 else { return nil }
+        let size = parts[0].split(separator: "x")
+        guard size.count == 2,
+              let width = Int(size[0]), let height = Int(size[1]),
+              let index = Int(parts[1]),
+              width > 0, height > 0 else { return nil }
+
+        let pixels = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: pixels, format: format).image { context in
+            UIColor(hue: CGFloat(index % 24) / 24, saturation: 0.55, brightness: 0.85, alpha: 1)
+                .setFill()
+            context.fill(CGRect(origin: .zero, size: pixels))
+            ("\(index)" as NSString).draw(
+                at: CGPoint(x: 12, y: 12),
+                withAttributes: [
+                    .font: UIFont.boldSystemFont(ofSize: min(pixels.width, pixels.height) / 4),
+                    .foregroundColor: UIColor.white
+                ])
+        }
+    }
+#endif
 
     static func cachedImage(for url: URL) -> UIImage? {
 #if DEBUG

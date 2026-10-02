@@ -349,6 +349,13 @@ struct FeedView: View {
     }
 
     @State private var availableHeight: CGFloat = 800
+#if DEBUG
+    /// Measurement only: does `List` recycle its rows the way the gallery's
+    /// collection view does, or retain them the way the old `LazyVStack`
+    /// grid did? Delete with the rest of item M's scaffolding.
+    @State private var frameProbe = FeedFrameProbe(surface: .feed)
+    @State private var feedAutoScroll: Task<Void, Never>?
+#endif
     private var layoutCommunity: String? { descriptor.kind == .community ? descriptor.name : nil }
     private var compactRows: Bool { dependencies.settings.feedLayout(for: layoutCommunity) == .compact }
     private var thumbnailOnRight: Bool { dependencies.settings.compactThumbnailSide == .right }
@@ -369,6 +376,14 @@ struct FeedView: View {
             } else {
                 ScrollViewReader { proxy in
                     List {
+#if DEBUG
+                        ScrollViewFinder { scrollView in
+                            feedAutoScroll = GalleryScrollDriver.start(scrollView)
+                        }
+                        .frame(height: 0)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets())
+#endif
                         if store.filteredPostCount > 0, dependencies.settings.showFilterCount {
                             Label("\(store.filteredPostCount) posts hidden by your filters", systemImage: "line.3.horizontal.decrease.circle")
                                 .font(.caption)
@@ -404,6 +419,11 @@ struct FeedView: View {
                                     )
                                 }
                             }
+#if DEBUG
+                            .perfGauge(.retainedTiles, group: .feed)
+                            .onAppear { FeedPerf.gauge(.liveTiles, 1, group: .feed) }
+                            .onDisappear { FeedPerf.gauge(.liveTiles, -1, group: .feed) }
+#endif
                             // Viewport visibility, not cell lifecycle: this
                             // fires for the screenful present at first render,
                             // which `onAppear`/`onDisappear` pairs did not, and
@@ -483,6 +503,16 @@ struct FeedView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { availableHeight = $0 }
+#if DEBUG
+        .task {
+            FeedPerf.size(posts: store.posts.count)
+            frameProbe.start()
+        }
+        .onDisappear {
+            frameProbe.stop()
+            feedAutoScroll?.cancel()
+        }
+#endif
         .navigationTitle(descriptor.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
