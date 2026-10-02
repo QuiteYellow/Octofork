@@ -1933,6 +1933,40 @@ final class DomainTests: XCTestCase {
         )
     }
 
+    func testFeedAudioFollowsTheSettingUntilTheReaderOverridesOneRow() {
+        // Setting off is the default, and nothing asks for audio.
+        var decision = OctonautFeedAudioDecision(
+            setting: false, rowRequest: nil, carriesAudio: true)
+        XCTAssertFalse(decision.wantsAudio)
+        // ...but the control is offered, which is the whole point of the
+        // hybrid: audio off globally is what makes a per-row opt-in useful.
+        XCTAssertTrue(decision.showsControl)
+
+        // The reader unmutes this one row.
+        decision.rowRequest = true
+        XCTAssertTrue(decision.wantsAudio)
+
+        // Setting on, nobody has said otherwise: the row follows it.
+        decision = OctonautFeedAudioDecision(
+            setting: true, rowRequest: nil, carriesAudio: true)
+        XCTAssertTrue(decision.wantsAudio)
+        // No control, because audio already follows the playing video and a
+        // second switch would only fight it.
+        XCTAssertFalse(decision.showsControl)
+
+        // A row the reader silenced stays silent even with the setting on.
+        decision.rowRequest = false
+        XCTAssertFalse(decision.wantsAudio)
+    }
+
+    func testSilentMediaNeverOffersAnAudioControl() {
+        // A GIF carries no sound, so a speaker button on one would do nothing.
+        let gif = OctonautFeedAudioDecision(
+            setting: false, rowRequest: nil, carriesAudio: false)
+        XCTAssertFalse(gif.showsControl)
+        XCTAssertFalse(gif.wantsAudio)
+    }
+
     @MainActor
     func testOnlyOneFeedRowOwnsAudioAtATime() throws {
         var activations = 0

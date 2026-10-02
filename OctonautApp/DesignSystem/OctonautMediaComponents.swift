@@ -967,6 +967,8 @@ struct OctonautInlineMediaView: View {
                             url: url,
                             audioURL: post.audioURL,
                             playAudio: dependencies.settings.playFeedVideoAudio,
+                            // Only real video carries sound; a GIF is silent.
+                            offersAudioControl: post.mediaKind == "video",
                             autoplay: dependencies.settings.autoplayVideo.shouldAutoplay(
                                 isConnectedViaWiFi: networkStatus.isConnectedViaWiFi
                             ) && (preloader == nil || isVisibleInFeed),
@@ -1207,10 +1209,37 @@ private struct OctonautEmbeddedVideoView: UIViewRepresentable {
     }
 }
 
+/// Whether a feed video row should be asking for audio, and whether to offer
+/// the reader a control that decides it.
+///
+/// Two inputs that have to agree: a global setting, and a per-row choice the
+/// reader may or may not have made. Pulled out of the view because the
+/// precedence between them is easy to get subtly wrong and impossible to test
+/// while it lives inside a `View`.
+struct OctonautFeedAudioDecision: Equatable {
+    /// `playFeedVideoAudio`: what a row does when the reader has said nothing.
+    var setting: Bool
+    /// What the reader asked of this row specifically, if anything.
+    var rowRequest: Bool?
+    /// Whether this media can carry sound at all. A GIF cannot.
+    var carriesAudio: Bool
+
+    /// The row's own request wins where it exists; otherwise the setting.
+    var wantsAudio: Bool { rowRequest ?? setting }
+
+    /// Offered only when feed audio is off globally. With the setting on,
+    /// audio already follows whichever video is playing, and a second control
+    /// would only be a way to fight it.
+    var showsControl: Bool { carriesAudio && !setting }
+}
+
 struct OctonautVideoPlayer: View {
     let url: URL
     var audioURL: URL?
     var playAudio = false
+    /// Whether this media can carry sound at all. A GIF cannot, and offering
+    /// a speaker button on one is a control that does nothing.
+    var offersAudioControl = false
     var autoplay = false
     var loops = false
     /// Reddit's published dimensions, where the post carries them. Preferred
@@ -1237,6 +1266,13 @@ struct OctonautVideoPlayer: View {
     // Upstream's: held rather than recomputed, which matches `networkStatus`
     // and the other shared observables this view reads.
     @State private var coordinator = OctonautPlaybackCoordinator.shared
+    /// The reader's own decision about this row's audio, where they have made
+    /// one. `nil` means follow `playAudio`, the global setting.
+    ///
+    /// This is what makes the setting and the button a pair rather than two
+    /// rival switches: the setting says what a row does when nobody has said
+    /// otherwise, and the button says otherwise for one row.
+    @State private var audioRequested: Bool?
 
     /// A composed player is the only kind worth preparing ahead, so it is the
     /// only kind that comes from the preloader.
@@ -1247,7 +1283,31 @@ struct OctonautVideoPlayer: View {
     /// The viewer takes over playback while it is open.
     private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
 
-    private var effectiveMuted: Bool { !playAudio || !coordinator.isAudioOwner(url) }
+    private var audioDecision: OctonautFeedAudioDecision {
+        OctonautFeedAudioDecision(
+            setting: playAudio, rowRequest: audioRequested, carriesAudio: offersAudioControl)
+    }
+
+    /// Whether this row is asking to be the audible one.
+    private var wantsAudio: Bool { audioDecision.wantsAudio }
+
+    /// Muted unless this row owns audio.
+    ///
+    /// Ownership is the single source of truth, and that is the change that
+    /// makes a per-row control possible at all. This used to read
+    /// `!playAudio || !coordinator.isAudioOwner(url)`, where the setting being
+    /// off muted the row no matter what -- so claiming audio for one video
+    /// could not unmute it, and a button would have done nothing. Now the
+    /// setting decides who claims ownership, and ownership decides who is
+    /// audible.
+    private var effectiveMuted: Bool { !coordinator.isAudioOwner(url) }
+
+    /// Whether to offer the per-row speaker control.
+    ///
+    /// Only when feed audio is switched off globally. With the setting on,
+    /// audio already follows whichever video is playing and a second control
+    /// would just be a way to fight it.
+    private var showsAudioControl: Bool { audioDecision.showsControl }
 
     private var playbackRequest: PlaybackRequest {
         PlaybackRequest(url: url, audioURL: audioURL)
@@ -1269,6 +1329,7 @@ struct OctonautVideoPlayer: View {
                         }
                 }
                 .aspectRatio(aspectRatio, contentMode: .fit)
+                .overlay(alignment: .bottomTrailing) { audioControl }
             } else {
                 ZStack {
                     Color.black
@@ -1362,10 +1423,24 @@ struct OctonautVideoPlayer: View {
             }
         }
         .onChange(of: playAudio) { _, _ in
+            // Changing the global setting is a fresh instruction, so a
+            // per-row override from earlier no longer reflects what the
+            // reader wants.
+            audioRequested = nil
             updateAudioOwnership()
+        }
+        .onChange(of: coordinator.audioOwner) { _, owner in
+            // Another row has taken the audio. This row's request has been
+            // answered and lost; leaving it set would have the two of them
+            // claiming ownership back off each other.
+            if owner != url, audioRequested == true { audioRequested = nil }
         }
         .onDisappear {
             playbackRequested = false
+            // Deliberately forgotten rather than remembered: a video the
+            // reader unmuted, scrolled past, and came back to should not
+            // start talking again on its own.
+            audioRequested = nil
             coordinator.releaseAudio(for: url)
             if let player {
                 coordinator.record(player.currentTime().seconds, for: url)
@@ -1376,6 +1451,35 @@ struct OctonautVideoPlayer: View {
             looper.detach()
         }
         .accessibilityLabel("Video")
+    }
+
+    /// The per-row speaker, shown when feed audio is off globally.
+    ///
+    /// Layered above `openVideoButton` at the call site, which covers the
+    /// whole frame, so its taps are not swallowed by the open-full-screen
+    /// action.
+    @ViewBuilder
+    private var audioControl: some View {
+        if showsAudioControl {
+            let isAudible = coordinator.isAudioOwner(url)
+            Button {
+                // Recorded as this row's own decision, not pushed straight at
+                // the coordinator: `updateAudioOwnership` runs again on every
+                // scroll and would hand a manual claim straight back if the
+                // only record of it lived in the coordinator.
+                audioRequested = !isAudible
+                updateAudioOwnership()
+            } label: {
+                Image(systemName: isAudible ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(9)
+                    .background(.black.opacity(0.58), in: Circle())
+                    .padding(9)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isAudible ? "Mute video" : "Unmute video")
+        }
     }
 
     /// Takes ownership of a player and starts it if the row is still asking
@@ -1486,7 +1590,7 @@ struct OctonautVideoPlayer: View {
     }
 
     private func updateAudioOwnership() {
-        if playAudio && shouldPlay && player != nil {
+        if wantsAudio && shouldPlay && player != nil {
             coordinator.claimAudio(for: url)
         } else {
             coordinator.releaseAudio(for: url)
