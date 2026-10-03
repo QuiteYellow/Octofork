@@ -1511,3 +1511,20 @@ final class DomainTests: XCTestCase {
         XCTAssertEqual(deactivations, 2)
     }
 }
+
+extension DomainTests {
+    func testLinkHostNameDropsOnlyALeadingWWW() throws {
+        func host(_ string: String) throws -> String {
+            LinkHostName.display(for: try XCTUnwrap(URL(string: string)))
+        }
+
+        XCTAssertEqual(try host("https://www.theverge.com/2026/story"), "theverge.com")
+        XCTAssertEqual(try host("https://WWW.Example.com"), "Example.com")
+        XCTAssertEqual(try host("https://theverge.com/story"), "theverge.com")
+        // Not a `www.` prefix, however much it looks like one.
+        XCTAssertEqual(try host("https://www2.example.com"), "www2.example.com")
+        XCTAssertEqual(try host("https://wwwtheverge.com"), "wwwtheverge.com")
+        // Nothing to take a host from falls back to the whole thing.
+        XCTAssertEqual(try host("mailto:someone@example.com"), "mailto:someone@example.com")
+    }
+}
