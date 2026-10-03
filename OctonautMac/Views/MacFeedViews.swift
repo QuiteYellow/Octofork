@@ -18,6 +18,8 @@ struct MacFeedListView: View {
             case .idle, .loading:
                 ProgressView("Loading \(descriptor.macTitle)…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loginRequired:
+                RedditLoginRequiredView()
             case .failed(let message) where store.posts.isEmpty:
                 ContentUnavailableView(
                     "Feed unavailable",
@@ -607,7 +609,9 @@ struct MacPostDetailView: View {
                     ProgressView("Loading comments…")
                 }
 
-                if case .failed(let message) = store.detailState {
+                if case .loginRequired = store.detailState {
+                    RedditLoginRequiredView()
+                } else if case .failed(let message) = store.detailState {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .foregroundStyle(.red)
                 }

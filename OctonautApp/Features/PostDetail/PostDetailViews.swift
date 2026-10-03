@@ -70,6 +70,8 @@ struct PostDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
                     .padding(.top, 8)
+                } else if case .loginRequired = store.detailState {
+                    RedditLoginRequiredView()
                 } else if case .failed(let message) = store.detailState {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: "exclamationmark.triangle")

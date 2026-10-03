@@ -5,6 +5,43 @@ import XCTest
 @testable import Octonaut
 
 final class DomainTests: XCTestCase {
+    @MainActor
+    func testSearchUsesSelectedAccountAndReturnsToAnonymous() async {
+        let client = FixtureRedditClient()
+        let model = SearchFeatureModel(reddit: client)
+        let account = AccountID()
+        for scope in FeatureSearchScope.allCases {
+            await model.submit(query: "swift", scope: scope, account: account)
+        }
+        await model.loadTrendingCommunities(account: account)
+        await model.submit(query: "swift", scope: .posts, account: nil)
+        let accounts = await client.searchAccounts
+        XCTAssertEqual(accounts, [account, account, account, account, nil])
+    }
+
+    func testBlockedAnonymousResponsesOfferLogin() throws {
+        for status in [401, 403, 200] {
+            let response = HTTPURLResponse(url: URL(string: "https://www.reddit.com/hot.json")!, statusCode: status, httpVersion: nil, headerFields: nil)!
+            let data = Data((status == 200 ? "  <html>Blocked</html>" : "{}").utf8)
+            XCTAssertThrowsError(try URLSessionRedditClient.validateResponse(data, response: response, isAnonymous: true)) { error in
+                XCTAssertEqual(error as? RedditClientError, .anonymousAccessBlocked)
+                XCTAssertEqual(OctonautLoadState.failure(error), .loginRequired)
+            }
+        }
+    }
+
+    func testSignedInAndRateLimitErrorsDoNotOfferAnonymousLogin() throws {
+        for (status, anonymous, expected) in [(403, false, RedditClientError.accessDenied), (401, false, .authenticationRequired), (429, true, .rateLimited(retryAfter: 10)), (404, true, .notFound), (500, true, .http(statusCode: 500, message: nil))] {
+            let response = HTTPURLResponse(url: URL(string: "https://www.reddit.com/hot.json")!, statusCode: status, httpVersion: nil, headerFields: ["Retry-After": "10"])!
+            XCTAssertThrowsError(try URLSessionRedditClient.validateResponse(Data("{}".utf8), response: response, isAnonymous: anonymous)) { error in
+                XCTAssertEqual(error as? RedditClientError, expected)
+                XCTAssertNotEqual(OctonautLoadState.failure(error), .loginRequired)
+            }
+        }
+        let response = HTTPURLResponse(url: URL(string: "https://www.reddit.com/hot.json")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        XCTAssertNoThrow(try URLSessionRedditClient.validateResponse(Data("{}".utf8), response: response, isAnonymous: true))
+    }
+
     func testWideInterfaceFollowsHorizontalSizeClass() {
         XCTAssertTrue(OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: .regular))
         XCTAssertFalse(OctonautAdaptiveLayout.usesWideInterface(horizontalSizeClass: .compact))

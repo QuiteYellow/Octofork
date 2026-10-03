@@ -50,6 +50,8 @@ struct OctonautStateView<Content: View>: View {
             ContentUnavailableView(
                 "Nothing here yet", systemImage: "tray",
                 description: Text("Try refreshing or changing your filters."))
+        case .loginRequired:
+            RedditLoginRequiredView()
         case .failed(let message):
             ContentUnavailableView {
                 Label("Could not load", systemImage: "exclamationmark.triangle")
