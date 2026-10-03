@@ -104,13 +104,14 @@ struct MacFeedListView: View {
                             }
                     }
 
-                    if !store.posts.isEmpty {
-                        Button("Load More") {
-                            Task { await store.loadMorePosts(for: descriptor) }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
+                    if store.feedState == .loaded,
+                       let nextPage = store.galleryPageCursor(for: descriptor) {
+                        ProgressView("Loading more posts…")
+                            .frame(maxWidth: .infinity)
+                            .listRowSeparator(.hidden)
+                            .task(id: nextPage) {
+                                await store.loadMorePosts(for: descriptor)
+                            }
                     }
                 }
                 .listStyle(.plain)
@@ -814,6 +815,7 @@ private struct MacMediaLightboxView: View {
     @State private var saveMessage: String?
     @State private var saveError: String?
     @State private var player: AVPlayer?
+    @State private var playbackWarning: String?
 
     private let saver = MacMediaSaver()
 
@@ -895,11 +897,23 @@ private struct MacMediaLightboxView: View {
         .onAppear(perform: keepPageInBounds)
         .onChange(of: mediaURLs) { _, _ in keepPageInBounds() }
         .onChange(of: currentURL, initial: true) { _, newURL in
+            player?.pause()
+            playbackWarning = nil
             guard isVideo, let newURL else {
                 player = nil
                 return
             }
-            player = AVPlayer(url: newURL)
+            player = AVPlayer(url: RedditVideoPlayback.url(
+                for: newURL,
+                isGIF: post.mediaKind == "gif"
+            ))
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVPlayerItem.failedToPlayToEndTimeNotification)) { notification in
+            guard let item = notification.object as? AVPlayerItem,
+                  item === player?.currentItem else { return }
+            playbackWarning = RedditVideoPlayback.failureMessage(
+                for: notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+            )
         }
         .onDisappear {
             player?.pause()
@@ -920,6 +934,16 @@ private struct MacMediaLightboxView: View {
                 fillsPane: fillsPane,
                 onDoubleClick: onTogglePaneFill
             )
+            .overlay(alignment: .topLeading) {
+                if let playbackWarning {
+                    Text(playbackWarning)
+                        .font(.caption)
+                        .padding(8)
+                        .background(.black.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
+                        .padding(.top, 48)
+                        .padding(.horizontal, 12)
+                }
+            }
         } else if post.mediaKind == "embeddedVideo" {
             VStack(spacing: 14) {
                 if let thumbnailURL = post.thumbnailURL {

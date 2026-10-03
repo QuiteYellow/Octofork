@@ -162,6 +162,44 @@ final class DomainTests: XCTestCase {
         XCTAssertThrowsError(try MediaDownloadTransport.validate(response))
     }
 
+    func testRedditVideoPlaybackUsesPlaylistForSeparateAudio() throws {
+        for filename in ["DASH_720.mp4", "CMAF_360.mp4"] {
+            let source = try XCTUnwrap(URL(string: "https://v.redd.it/clip/\(filename)?source=fallback#fragment"))
+            XCTAssertEqual(
+                RedditVideoPlayback.url(for: source, isGIF: false).absoluteString,
+                "https://v.redd.it/clip/HLSPlaylist.m3u8"
+            )
+            XCTAssertEqual(RedditVideoPlayback.url(for: source, isGIF: true), source)
+        }
+    }
+
+    func testRedditVideoPlaybackPreservesOtherSources() throws {
+        for value in [
+            "https://v.redd.it/clip/HLSPlaylist.m3u8?f=hd",
+            "https://example.com/movie.mp4",
+            "https://v.redd.it.example.com/clip/CMAF_360.mp4",
+            "http://v.redd.it/clip/CMAF_360.mp4",
+            "https://user:password@v.redd.it/clip/CMAF_360.mp4",
+            "https://v.redd.it:8443/clip/CMAF_360.mp4",
+            "https://v.redd.it/CMAF_360.mp4"
+        ] {
+            let source = try XCTUnwrap(URL(string: value))
+            XCTAssertEqual(RedditVideoPlayback.url(for: source, isGIF: false), source)
+        }
+    }
+
+    func testRedditVideoPlaybackExplainsAudioOutputFailure() {
+        let outputError = NSError(domain: NSOSStatusErrorDomain, code: 2003329396)
+        let wrapped = NSError(domain: AVFoundationErrorDomain, code: -11800, userInfo: [NSUnderlyingErrorKey: outputError])
+        XCTAssertTrue(RedditVideoPlayback.failureMessage(for: wrapped).contains("audio output could not start"))
+        XCTAssertEqual(RedditVideoPlayback.failureMessage(for: outputError), RedditVideoPlayback.failureMessage(for: wrapped))
+        XCTAssertEqual(RedditVideoPlayback.failureMessage(for: nil), "The video could not play. Reopen it to try again.")
+        XCTAssertEqual(
+            RedditVideoPlayback.failureMessage(for: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)),
+            RedditVideoPlayback.failureMessage(for: nil)
+        )
+    }
+
     func testRedditDASHManifestSelectsHighestQualityTracks() throws {
         let mediaURL = try XCTUnwrap(
             URL(string: "https://v.redd.it/clip123/HLSPlaylist.m3u8?source=fallback")
