@@ -368,6 +368,33 @@ private enum OctonautAVPlayerFactory {
         localPlaybackPlayer(item: AVPlayerItem(asset: AVURLAsset(url: url)))
     }
 
+    /// A player for media that needs no composing, built synchronously.
+    ///
+    /// Nothing here touches the network, so a row can have a player in the
+    /// same frame it asks for one. That is the whole point: a row that awaits
+    /// its player has a state where it has none, and that state is the black
+    /// frame and spinner. AVFoundation loads the asset behind the player.
+    static func makeStreamingPlayer(url: URL) -> AVPlayer {
+        localPlaybackPlayer(url: url)
+    }
+
+    /// Measures a video whose post published no dimensions. Returns nil when
+    /// the asset cannot answer -- an HLS playlist has no asset tracks to
+    /// read -- so a caller can keep its own default rather than adopt 16:9.
+    static func measuredAspectRatio(for url: URL) async -> CGFloat? {
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let naturalSize = try? await track.load(.naturalSize),
+              let transform = try? await track.load(.preferredTransform) else {
+            return nil
+        }
+        let displaySize = naturalSize.applying(transform)
+        let width = abs(displaySize.width)
+        let height = abs(displaySize.height)
+        guard width > 0, height > 0 else { return nil }
+        return width / height
+    }
+
     private static func aspectRatio(for asset: AVAsset) async -> CGFloat {
         guard let track = try? await asset.loadTracks(withMediaType: .video).first,
               let naturalSize = try? await track.load(.naturalSize),
@@ -479,10 +506,15 @@ final class OctonautFeedMediaPreloader {
             for url in imageURLs(for: post, compact: compact) {
                 prepareImage(at: url)
             }
+            // Only media that has to be composed is worth preparing ahead.
+            // Anything else is built synchronously at the row, so warming it
+            // here would construct players -- and their decode sessions and
+            // connections -- for a whole window of posts nobody is looking at.
             if !compact,
                post.mediaKind == "video" || post.mediaKind == "gif",
-               let url = post.mediaURL {
-                prepareVideo(at: url, audioURL: post.audioURL)
+               let url = post.mediaURL,
+               let audioURL = post.audioURL {
+                prepareVideo(at: url, audioURL: audioURL)
             }
         }
     }
@@ -493,6 +525,17 @@ final class OctonautFeedMediaPreloader {
             return await task.value
         }
         return await prepareVideo(at: videoURL, audioURL: audioURL).value
+    }
+
+    /// Drops a prepared player so the next request builds a new one.
+    ///
+    /// A prepared entry is a `Task` whose value is awaited by every row for
+    /// that video, and it is never retried: without this, one player that
+    /// failed or stalled stays the answer for the rest of the session.
+    func invalidate(videoURL: URL, audioURL: URL?) {
+        let key = VideoKey(url: videoURL, audioURL: audioURL)
+        videoTasks.removeValue(forKey: key)
+        mediaOrder.removeAll { $0 == .video(key) }
     }
 
     private func prepareImage(at url: URL) {
@@ -699,6 +742,7 @@ struct OctonautInlineMediaView: View {
                                 isConnectedViaWiFi: networkStatus.isConnectedViaWiFi
                             ) && (preloader == nil || isVisibleInFeed),
                             loops: post.mediaKind == "gif",
+                            aspectRatioHint: post.mediaAspectRatio,
                             preloader: preloader
                         )
                         .overlay { openVideoButton }
@@ -925,14 +969,27 @@ struct OctonautVideoPlayer: View {
     var playAudio = false
     var autoplay = false
     var loops = false
+    /// Reddit's published dimensions, where the post carries them. Preferred
+    /// over measuring the asset, which costs a load and reads nothing at all
+    /// from an HLS playlist.
+    var aspectRatioHint: CGFloat?
     var preloader: OctonautFeedMediaPreloader?
     @State private var player: AVPlayer?
-    @State private var aspectRatio: CGFloat = 16 / 9
+    @State private var measuredAspectRatio: CGFloat?
     @State private var playbackRequested = false
     @State private var looper = OctonautVideoLooper()
     @State private var positionObserver: Any?
+    @State private var failureObservers: [any NSObjectProtocol] = []
+    @State private var recoveryAttempts = 0
     @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
     @State private var coordinator = OctonautPlaybackCoordinator.shared
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// A composed player is the only kind worth preparing ahead, so it is the
+    /// only kind that comes from the preloader.
+    private var needsComposing: Bool { audioURL != nil && audioURL != url }
+
+    private var aspectRatio: CGFloat { measuredAspectRatio ?? aspectRatioHint ?? 16 / 9 }
 
     /// The viewer takes over playback while it is open.
     private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
@@ -963,9 +1020,25 @@ struct OctonautVideoPlayer: View {
         .task(id: playbackRequest) {
             await OctonautAudioSession.prepareForMutedFeedPlayback()
             playbackRequested = shouldPlay
-            removePositionObserver()
-            player?.pause()
-            player = nil
+            recoveryAttempts = 0
+            teardownPlayer()
+
+            // Nothing to compose means nothing to wait for. Building the
+            // player here removes the state where the row has none, which is
+            // what the black frame and spinner were showing.
+            guard needsComposing else {
+                adopt(OctonautAVPlayerFactory.makeStreamingPlayer(url: url), muxOutcome: .notApplicable)
+                // Refine the frame afterwards rather than before: a post that
+                // publishes no dimensions should still not be laid out at
+                // 16:9 forever, but measuring must not hold up the player.
+                if aspectRatioHint == nil,
+                   let measured = await OctonautAVPlayerFactory.measuredAspectRatio(for: url),
+                   !Task.isCancelled {
+                    measuredAspectRatio = measured
+                }
+                return
+            }
+
             let playback: OctonautAVPlayerFactory.Playback
             if let preloader {
                 playback = await preloader.playback(videoURL: url, audioURL: audioURL)
@@ -973,18 +1046,17 @@ struct OctonautVideoPlayer: View {
                 playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
             }
             guard !Task.isCancelled else { return }
-            muxOutcome = playback.muxOutcome
-            aspectRatio = playback.aspectRatio
-            if loops {
-                looper.attach(to: playback.player)
+            // Only trust a measurement when the post published no dimensions.
+            if aspectRatioHint == nil {
+                measuredAspectRatio = playback.aspectRatio
             }
-            player = playback.player
-            observePosition(of: playback.player)
-            updateAudioOwnership()
-            playback.player.isMuted = effectiveMuted
-            if playbackRequested {
-                playback.player.play()
-            }
+            adopt(playback.player, muxOutcome: playback.muxOutcome)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Coming back from the background on a failed item, as Winston
+            // does: a player that failed while away never recovers by itself.
+            guard phase == .active else { return }
+            recoverIfFailed()
         }
         .onChange(of: effectiveMuted) { _, isNowMuted in
             player?.isMuted = isNowMuted
@@ -993,6 +1065,7 @@ struct OctonautVideoPlayer: View {
             playbackRequested = shouldAutoplay
             updateAudioOwnership()
             if shouldAutoplay {
+                recoverIfFailed()
                 // Resume wherever the viewer left off rather than where this
                 // row was when it handed playback over.
                 if let resumeAt = coordinator.position(for: url), resumeAt > 0 {
@@ -1002,7 +1075,7 @@ struct OctonautVideoPlayer: View {
                         toleranceAfter: .zero
                     )
                 }
-                player?.play()
+                if let player { play(player) }
             } else {
                 if let player {
                     coordinator.record(player.currentTime().seconds, for: url)
@@ -1021,9 +1094,113 @@ struct OctonautVideoPlayer: View {
             }
             player?.pause()
             removePositionObserver()
+            removeFailureObservers()
             looper.detach()
         }
         .accessibilityLabel("Video")
+    }
+
+    /// Takes ownership of a player and starts it if the row is still asking
+    /// for playback.
+    private func adopt(_ newPlayer: AVPlayer, muxOutcome newOutcome: OctonautMuxOutcome) {
+        muxOutcome = newOutcome
+        if loops {
+            looper.attach(to: newPlayer)
+        }
+        player = newPlayer
+        observePosition(of: newPlayer)
+        observeFailures(of: newPlayer)
+        updateAudioOwnership()
+        if playbackRequested {
+            play(newPlayer)
+        }
+    }
+
+    /// Plays from the start when the player is sitting at the end.
+    ///
+    /// `play()` on a player parked at its final frame does nothing, and a
+    /// player can be parked there by having been watched to the end in the
+    /// viewer, which hands the position back here.
+    private func play(_ player: AVPlayer) {
+        if let duration = player.currentItem?.duration.seconds,
+           duration.isFinite,
+           player.currentTime().seconds >= duration - 0.25 {
+            player.seek(to: .zero)
+            coordinator.record(0, for: url)
+        }
+        player.play()
+    }
+
+    private func teardownPlayer() {
+        removePositionObserver()
+        removeFailureObservers()
+        player?.pause()
+        player = nil
+    }
+
+    /// Rebuilds the player when the item has failed outright.
+    private func recoverIfFailed() {
+        guard player?.currentItem?.status == .failed || player?.error != nil else { return }
+        rebuildPlayer()
+    }
+
+    /// A stalled or failed item is rebuilt from a fresh asset, and the
+    /// prepared copy is dropped so the next row does not inherit it.
+    ///
+    /// Capped, because a video Reddit will not serve should settle on a still
+    /// frame rather than retry for as long as the feed is open.
+    private func rebuildPlayer() {
+        guard recoveryAttempts < 2 else { return }
+        recoveryAttempts += 1
+        let resumeAt = player.map { $0.currentTime().seconds } ?? 0
+        preloader?.invalidate(videoURL: url, audioURL: audioURL)
+        teardownPlayer()
+
+        guard needsComposing else {
+            let replacement = OctonautAVPlayerFactory.makeStreamingPlayer(url: url)
+            if resumeAt > 0 {
+                replacement.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
+            }
+            adopt(replacement, muxOutcome: .notApplicable)
+            return
+        }
+
+        Task {
+            let playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
+            if aspectRatioHint == nil {
+                measuredAspectRatio = playback.aspectRatio
+            }
+            if resumeAt > 0 {
+                await playback.player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
+            }
+            adopt(playback.player, muxOutcome: playback.muxOutcome)
+        }
+    }
+
+    /// Watches for the two ways an item dies mid-flight. Without this a video
+    /// that stalls stays a still frame until the reader scrolls away, and a
+    /// prepared player that failed is handed to every row that asks for it.
+    private func observeFailures(of player: AVPlayer) {
+        removeFailureObservers()
+        guard let item = player.currentItem else { return }
+        let names: [Notification.Name] = [
+            .AVPlayerItemFailedToPlayToEndTime,
+            .AVPlayerItemPlaybackStalled
+        ]
+        failureObservers = names.map { name in
+            NotificationCenter.default.addObserver(
+                forName: name,
+                object: item,
+                queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { rebuildPlayer() }
+            }
+        }
+    }
+
+    private func removeFailureObservers() {
+        failureObservers.forEach(NotificationCenter.default.removeObserver)
+        failureObservers = []
     }
 
     private func updateAudioOwnership() {
