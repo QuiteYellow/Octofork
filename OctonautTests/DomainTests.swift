@@ -1691,3 +1691,132 @@ extension DomainTests {
         XCTAssertNil(request.fields["container"])
     }
 }
+
+@MainActor
+final class LoginRequirementTests: XCTestCase {
+    func testAnonymousActionsRequestLogin() {
+        let dependencies = AppDependencies.preview()
+        XCTAssertFalse(dependencies.accounts.requireLogin())
+        XCTAssertTrue(dependencies.accounts.showingLoginRequired)
+        dependencies.accounts.showingLoginRequired = false
+        XCTAssertNil(dependencies.accounts.selectedAccountID)
+    }
+
+    func testHealthyAccountAllowsActionsAndExpiredAccountRequestsLogin() async throws {
+        let dependencies = AppDependencies.preview()
+        let healthy = Account(username: "reader", health: .healthy)
+        try await dependencies.persistence.saveAccount(healthy)
+        await dependencies.accounts.load()
+        XCTAssertTrue(dependencies.accounts.requireLogin())
+        XCTAssertFalse(dependencies.accounts.showingLoginRequired)
+        let router = OctonautFeatureRouter()
+        router.accounts = dependencies.accounts
+        router.push(.account("reader"))
+        XCTAssertEqual(router.path, [.account("reader")])
+        router.presentedSheet = .composer(.post, community: "swift")
+        XCTAssertEqual(router.presentedSheet, .composer(.post, community: "swift"))
+        await dependencies.accounts.markNeedsLogin(healthy.id)
+        XCTAssertFalse(dependencies.accounts.requireLogin())
+        XCTAssertTrue(dependencies.accounts.showingLoginRequired)
+    }
+
+    func testProtectedRoutesAndComposerStayClosedWhenAnonymous() {
+        let dependencies = AppDependencies.preview()
+        let router = OctonautFeatureRouter(path: [.feed(.home)])
+        router.accounts = dependencies.accounts
+        router.push(.account("reader"))
+        XCTAssertEqual(router.path, [.feed(.home)])
+        router.path = [.composer(.post)]
+        XCTAssertEqual(router.path, [.feed(.home)])
+        router.presentedSheet = .composer(.post, community: "swift")
+        XCTAssertNil(router.presentedSheet)
+        XCTAssertTrue(dependencies.accounts.showingLoginRequired)
+        router.push(.community("swift"))
+        XCTAssertEqual(router.path.last, .community("swift"))
+    }
+}
+
+@MainActor
+final class AccountLogoutTests: XCTestCase {
+    func testLogoutStaysAnonymousAfterAccountListReloads() async throws {
+        let dependencies = AppDependencies.preview()
+        let account = Account(username: "reader", health: .healthy)
+        try await dependencies.persistence.saveAccount(account)
+        await dependencies.accounts.load()
+        XCTAssertEqual(dependencies.accounts.selectedAccountID, account.id)
+        let previousToken = dependencies.accounts.token()
+
+        try await dependencies.accounts.logOut()
+        await dependencies.accounts.load()
+        await dependencies.accounts.load()
+
+        XCTAssertNil(dependencies.accounts.selectedAccountID)
+        XCTAssertNil(dependencies.accounts.selectedAccount)
+        XCTAssertTrue(dependencies.accounts.accounts.isEmpty)
+        XCTAssertFalse(dependencies.accounts.isCurrent(previousToken))
+        XCTAssertFalse(dependencies.accounts.requireLogin())
+    }
+
+    func testAnonymousSelectionBeforeInitialLoadIsPreserved() async throws {
+        let dependencies = AppDependencies.preview()
+        try await dependencies.persistence.saveAccount(Account(username: "reader", health: .healthy))
+        try await dependencies.accounts.select(nil)
+        await dependencies.accounts.load()
+        XCTAssertNil(dependencies.accounts.selectedAccountID)
+    }
+
+    func testLogoutAndExplicitAccountSelectionSurviveRestart() async throws {
+        let suite = "OctonautTests.account-selection.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let persistence = InMemoryPersistenceStore()
+        let vault = InMemoryCredentialVault()
+        let account = Account(username: "reader", health: .healthy)
+        try await persistence.saveAccount(account)
+        func coordinator() -> AccountCoordinator {
+            AccountCoordinator(persistence: persistence, secrets: CredentialVaultSecretStore(vault: vault), selectionDefaults: defaults)
+        }
+        let first = coordinator()
+        await first.load()
+        try await first.logOut()
+
+        let restarted = coordinator()
+        await restarted.load()
+        XCTAssertNil(restarted.selectedAccountID)
+        let remainingAccounts = try await persistence.loadAccounts()
+        XCTAssertTrue(remainingAccounts.isEmpty)
+        try await persistence.saveAccount(account)
+        await restarted.load()
+        try await restarted.select(account.id)
+
+        let selectedAgain = coordinator()
+        await selectedAgain.load()
+        XCTAssertEqual(selectedAgain.selectedAccountID, account.id)
+    }
+}
+
+@MainActor
+final class LogoutCredentialTests: XCTestCase {
+    func testLogoutDeletesCredentialAndKeepsOtherAccountsUnselected() async throws {
+        let persistence = InMemoryPersistenceStore()
+        let vault = InMemoryCredentialVault()
+        let secrets = CredentialVaultSecretStore(vault: vault)
+        let coordinator = AccountCoordinator(persistence: persistence, secrets: secrets)
+        let other = Account(username: "other", health: .healthy)
+        let selected = Account(username: "reader", health: .healthy)
+        let secret = SessionSecret(cookieName: "reddit_session", cookieValue: "synthetic-session", modhash: "synthetic-modhash", redditUser: "reader", validatedAt: .now)
+        try await coordinator.add(other, secret: secret)
+        try await coordinator.add(selected, secret: secret)
+        try await coordinator.logOut()
+        await coordinator.load()
+
+        XCTAssertNil(coordinator.selectedAccountID)
+        XCTAssertEqual(coordinator.accounts.map(\.id), [other.id])
+        let deletedCredential = try await vault.credential(for: selected.id)
+        let otherCredential = try await vault.credential(for: other.id)
+        XCTAssertNil(deletedCredential)
+        XCTAssertNotNil(otherCredential)
+        let savedAccounts = try await persistence.loadAccounts()
+        XCTAssertEqual(savedAccounts.map(\.id), [other.id])
+    }
+}

@@ -210,6 +210,8 @@ struct OctonautUsernameLink: View {
 struct OctonautPostRow: View {
     @Environment(\.octonautTheme) private var theme
     @Environment(\.openURL) private var openURL
+    @Environment(AppDependencies.self) private var dependencies
+    @State private var reportTarget: RedditReportTarget?
     let post: PostCardModel
     var bodyLineLimit: Int? = 4
     var showsFlair = true
@@ -291,7 +293,9 @@ struct OctonautPostRow: View {
         .accessibilityLabel(
             "r/\(post.community), \(post.title), \(post.score) points, \(post.comments) comments"
         )
+        .sheet(item: $reportTarget) { ReportContentView(target: $0) }
         .contextMenu {
+            Button("Report", systemImage: "flag") { if dependencies.accounts.requireLogin() { reportTarget = RedditReportTarget(post: post) } }
             Button {
                 onVote?(1)
             } label: {
@@ -443,6 +447,8 @@ private extension View {
 
 struct OctonautCompactPostRow: View {
     @Environment(\.octonautTheme) private var theme
+    @Environment(AppDependencies.self) private var dependencies
+    @State private var reportTarget: RedditReportTarget?
     let post: PostCardModel
     var thumbnailOnRight = false
     var showsFlair = true
@@ -494,7 +500,9 @@ struct OctonautCompactPostRow: View {
         .accessibilityLabel(
             "\(post.isSensitive ? "Sensitive media. " : "")r/\(post.community), \(post.title), \(post.score) points, \(post.comments) comments"
         )
+        .sheet(item: $reportTarget) { ReportContentView(target: $0) }
         .contextMenu {
+            Button("Report", systemImage: "flag") { if dependencies.accounts.requireLogin() { reportTarget = RedditReportTarget(post: post) } }
             Button {
                 onVote?(1)
             } label: {
@@ -683,6 +691,7 @@ private struct OctonautCommunityIcon: View {
 
 struct OctonautCommentRow: View {
     @Environment(\.octonautTheme) private var theme
+    var onReport: (() -> Void)?
     let comment: CommentCardModel
     var postAuthor = ""
     var onCollapse: (() -> Void)?
@@ -750,6 +759,7 @@ struct OctonautCommentRow: View {
         .accessibilityElement(children: .contain)
         .accessibilityValue("Depth \(comment.depth), \(comment.isCollapsed ? "collapsed" : "expanded")")
         .contextMenu {
+            if let onReport { Button("Report", systemImage: "flag", action: onReport) }
             Button {
                 onVote?(1)
             } label: {

@@ -6,6 +6,7 @@ struct AccountRootView: View {
     let router: OctonautFeatureRouter
     @Environment(AppDependencies.self) private var dependencies
     @State private var showingAddAccount = false
+    @State private var logoutError: String?
 
     private var navigationTitle: String {
         guard dependencies.settings.showUsernameInAccountTab,
@@ -18,29 +19,47 @@ struct AccountRootView: View {
             if let account = dependencies.accounts.selectedAccount, account.health == .needsLogin {
                 NeedsLoginView(username: account.username) { showingAddAccount = true }
             } else if let account = dependencies.accounts.selectedAccount {
-                UserProfileView(username: account.username, store: store, router: router)
+                UserProfileView(
+                    username: account.username, store: store, router: router,
+                    onAddAccount: { showingAddAccount = true }, onLogOut: logOut
+                )
             } else {
                 AccountManagerView(store: store) { showingAddAccount = true }
             }
         }
         .navigationTitle(navigationTitle)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    if let account = dependencies.accounts.selectedAccount, account.health != .needsLogin {
-                        Button { router.push(.composer(.post)) } label: { Label("New Post", systemImage: "square.and.pencil") }
-                        Button {
-                            dependencies.accounts.logOut()
-                        } label: { Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right") }
+            if dependencies.accounts.selectedAccount?.health != .healthy {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingAddAccount = true } label: {
+                        Image(systemName: "person.badge.plus")
                     }
-                    Button { showingAddAccount = true } label: { Label("Add Account", systemImage: "person.badge.plus") }
-                } label: { Image(systemName: "plus") }
+                    .accessibilityLabel("Add Account")
+                }
             }
         }
         .sheet(isPresented: $showingAddAccount) {
             RedditLoginView(accounts: dependencies.accounts)
         }
+        .alert("Could not remove saved login", isPresented: Binding(
+            get: { logoutError != nil },
+            set: { if !$0 { logoutError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(logoutError ?? "")
+        }
         .task { await dependencies.accounts.load() }
+    }
+
+    private func logOut() {
+        Task {
+            do {
+                try await dependencies.accounts.logOut()
+            } catch {
+                logoutError = error.localizedDescription
+            }
+        }
     }
 
 }
@@ -71,22 +90,15 @@ struct AccountManagerView: View {
 
     var body: some View {
         List {
-            Section {
-                Button {
-                    dependencies.accounts.logOut()
-                } label: {
-                    Label("Continue without signing in", systemImage: "person.crop.circle.badge.xmark")
-                }
-            } header: {
-                OctonautSectionHeader("Current session")
-            }
+            Text("You are not signed in.")
+                .foregroundStyle(.secondary)
             Section {
                 ForEach(dependencies.accounts.accounts) { account in
                     HStack(spacing: 12) {
                         Image(systemName: "person.crop.circle.fill").font(.title2).foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 3) {
                             Text(account.username).font(.body.weight(.semibold))
-                            Text(account.health == .needsLogin ? "Needs sign in" : "Ready").font(.caption).foregroundStyle(account.health == .needsLogin ? .red : .secondary)
+                            Text(account.health == .needsLogin ? "Needs sign in" : (dependencies.accounts.selectedAccountID == account.id ? "Selected" : "Saved account")).font(.caption).foregroundStyle(account.health == .needsLogin ? .red : .secondary)
                         }
                         Spacer()
                             if dependencies.accounts.selectedAccountID == account.id { Image(systemName: "checkmark").foregroundStyle(.tint) }
@@ -143,6 +155,8 @@ struct UserProfileView: View {
     let username: String
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
+    var onAddAccount: (() -> Void)? = nil
+    var onLogOut: (() -> Void)? = nil
     @Environment(AppDependencies.self) private var dependencies
     @Environment(\.openURL) private var openURL
     @State private var showingLogin = false
@@ -231,12 +245,11 @@ struct UserProfileView: View {
         .contentMargins(.top, 8, for: .scrollContent)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(onAddAccount == nil ? .automatic : .hidden, for: .navigationBar)
         .refreshable {
             await store.loadUserProfile(username: username, forceRefresh: true)
         }
-        .sheet(isPresented: $showingLogin) {
-            RedditLoginView(accounts: dependencies.accounts)
-        }
+        .loginRequiredModal(isPresented: $showingLogin)
         .sheet(item: $messageRecipient) { recipient in
             NavigationStack {
                 ComposerView(kind: .message, store: store, recipient: recipient.username)
@@ -350,6 +363,27 @@ struct UserProfileView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 13)
+            .overlay(alignment: .topTrailing) {
+                if let onAddAccount {
+                    Menu {
+                        Button { router.push(.composer(.post)) } label: {
+                            Label("New Post", systemImage: "square.and.pencil")
+                        }
+                        Button { onLogOut?() } label: {
+                            Label("Log Out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                        Button(action: onAddAccount) {
+                            Label("Add Account", systemImage: "person.badge.plus")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.title3)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Account actions")
+                }
+            }
         }
     }
 

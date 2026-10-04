@@ -730,7 +730,7 @@ enum ComposerKind: String, CaseIterable, Identifiable, Hashable, Sendable {
 }
 
 enum SettingsDestination: String, CaseIterable, Identifiable, Hashable, Sendable {
-    case general, theme, appearance, intelligence, account, dataUse, statistics, advanced, about
+    case general, theme, appearance, intelligence, account, blockedUsers, dataUse, statistics, advanced, about
 
     var id: String { rawValue }
     var title: String {
@@ -740,6 +740,7 @@ enum SettingsDestination: String, CaseIterable, Identifiable, Hashable, Sendable
         case .appearance: "Appearance"
         case .intelligence: "Intelligence"
         case .account: "Account"
+        case .blockedUsers: "Blocked Users"
         case .dataUse: "Data Use"
         case .statistics: "Statistics"
         case .advanced: "Advanced"
@@ -803,6 +804,13 @@ enum OctonautUserDestination {
 }
 
 enum FeatureRoute: Hashable {
+    var requiresLogin: Bool {
+        switch self {
+        case .account, .userSection, .conversation, .composer: true
+        default: false
+        }
+    }
+
     case feed(FeedDescriptorModel)
     case post(PostCardModel)
     case postURL(URL)
@@ -2182,4 +2190,89 @@ final class OctonautFeatureStore {
     }
 
     static let preview = OctonautFeatureStore()
+}
+
+
+@MainActor
+@Observable
+final class BlockedUsersSettingsModel {
+    private let reddit: any RedditClient
+    private var accountID: AccountID?
+    private var context = ""
+    private var revision = UUID()
+    private(set) var users: [UserReference] = []
+    private(set) var isLoading = false
+    private(set) var isUpdating = false
+    private(set) var errorMessage: String?
+    private(set) var needsLogin = false
+
+    init(reddit: any RedditClient) { self.reddit = reddit }
+
+    static func normalizedUsername(_ input: String) -> String? {
+        var username = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if username.lowercased().hasPrefix("u/") { username.removeFirst(2) }
+        return OctonautUserDestination.route(for: username) == nil ? nil : username
+    }
+
+    func load(accountID: AccountID?, context: String) async {
+        let changed = self.accountID != accountID || self.context != context
+        if !changed && isUpdating { return }
+        if changed { users = []; isUpdating = false }
+        self.accountID = accountID
+        self.context = context
+        revision = UUID()
+        let request = revision
+        errorMessage = nil
+        needsLogin = accountID == nil
+        guard let accountID else { isLoading = false; return }
+        isLoading = true
+        defer { if revision == request { isLoading = false } }
+        do {
+            var collected: [UserReference] = []
+            var after: String?
+            var cursors = Set<String>()
+            repeat {
+                let page = try await reddit.blockedUsers(after: after, account: accountID)
+                guard revision == request, !Task.isCancelled else { return }
+                collected.append(contentsOf: page.items)
+                after = page.after
+                if let after, !cursors.insert(after).inserted { throw RedditClientError.malformedResponse }
+            } while after != nil
+            var seen = Set<String>()
+            users = collected.filter { seen.insert($0.id).inserted }.sorted { $0.id < $1.id }
+        } catch {
+            guard revision == request, !Task.isCancelled else { return }
+            record(error)
+        }
+    }
+
+    func setBlocked(_ blocked: Bool, username: String) async -> Bool {
+        guard let accountID, !isLoading, !isUpdating,
+              let username = Self.normalizedUsername(username) else { return false }
+        let request = revision
+        isUpdating = true
+        errorMessage = nil
+        defer { if revision == request { isUpdating = false } }
+        do {
+            let result = try await reddit.perform(.block(username: username, blocked: blocked), account: accountID)
+            guard result.succeeded else {
+                throw RedditClientError.reddit(errors: [result.message ?? "Reddit could not update the block list."])
+            }
+            await UserProfileCache.shared.remove(for: accountID)
+            guard revision == request, !Task.isCancelled else { return false }
+            users.removeAll { $0.id == username.lowercased() }
+            if blocked { users.append(UserReference(username: username)) }
+            users.sort { $0.id < $1.id }
+            return true
+        } catch {
+            guard revision == request, !Task.isCancelled else { return false }
+            record(error)
+            return false
+        }
+    }
+
+    private func record(_ error: Error) {
+        needsLogin = error as? RedditClientError == .authenticationRequired
+        errorMessage = error.localizedDescription
+    }
 }

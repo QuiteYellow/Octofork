@@ -70,6 +70,21 @@ private struct RedditRawThing: Decodable, Sendable {
 }
 
 enum RedditJSONCodec {
+    static func decodeBlockedUsers(_ data: Data) throws -> Listing<UserReference> {
+        let root = try JSONDecoder().decode(RedditJSONValue.self, from: data)
+        guard let listing = root.objectValue?["data"]?.objectValue,
+              let children = listing["children"]?.arrayValue else { throw RedditClientError.malformedResponse }
+        var seen = Set<String>()
+        let users = try children.map { child -> UserReference in
+            guard let object = child.objectValue else { throw RedditClientError.malformedResponse }
+            let payload = object["data"]?.objectValue ?? object
+            guard let username = payload["name"]?.stringValue,
+                  OctonautUserDestination.route(for: username) != nil else { throw RedditClientError.malformedResponse }
+            return UserReference(username: username)
+        }.filter { seen.insert($0.id).inserted }
+        return Listing(items: users, after: listing["after"]?.stringValue, before: listing["before"]?.stringValue)
+    }
+
     static func decodePosts(_ data: Data) throws -> Listing<Post> {
         let envelope = try JSONDecoder().decode(RedditRawListing.self, from: data)
         let posts = envelope.data.children.compactMap { thing -> Post? in
