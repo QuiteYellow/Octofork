@@ -303,9 +303,9 @@ final class SettingsTests: XCTestCase {
         XCTAssertFalse(reloaded.showUsernameInAccountTab)
     }
 
-    private func post(isNSFW: Bool, isSpoiler: Bool) -> PostCardModel {
+    private func post(id: String = "t3_blur", isNSFW: Bool, isSpoiler: Bool) -> PostCardModel {
         PostCardModel(
-            id: "t3_blur", community: "pics", author: "someone", title: "Title", body: "",
+            id: id, community: "pics", author: "someone", title: "Title", body: "",
             score: 1, comments: 0, age: "1h", vote: 0, isSaved: false, isSeen: false,
             isNSFW: isNSFW, isSpoiler: isSpoiler, isSticky: false, isVideo: false,
             hasMedia: true, mediaTitle: "",
@@ -443,6 +443,109 @@ final class SettingsTests: XCTestCase {
     }
 
     // MARK: - Profile sections
+
+    func testFailedUnsaveRestoresOnlyItsPostAfterAnotherUnsaveSucceeds() throws {
+        let first = post(id: "first", isNSFW: false, isSpoiler: false)
+        let second = post(id: "second", isNSFW: false, isSpoiler: false)
+        let third = post(id: "third", isNSFW: false, isSpoiler: false)
+        var posts = [first, second, third]
+
+        let failed = try XCTUnwrap(UserSectionPostRemoval(postID: first.id, posts: &posts))
+        _ = try XCTUnwrap(UserSectionPostRemoval(postID: second.id, posts: &posts))
+        failed.restore(in: &posts)
+
+        XCTAssertEqual(posts.map(\.id), ["first", "third"])
+        failed.restore(in: &posts)
+        XCTAssertEqual(posts.map(\.id), ["first", "third"])
+    }
+
+    func testProfileActionsUseOnlyTheSelectedWebsiteSession() async throws {
+        UserSectionRouteProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UserSectionRouteProtocol.self]
+        let selected = AccountID()
+        let other = AccountID()
+        let vault = InMemoryCredentialVault(values: [
+            selected: RedditCredential(cookieValue: "synthetic-selected", modhash: "synthetic-modhash"),
+            other: RedditCredential(cookieValue: "synthetic-other")
+        ])
+        let client = URLSessionRedditClient(credentialVault: vault, sessionConfiguration: configuration)
+        for action in [RedditAction.follow(username: "reader", following: true), .block(username: "reader", blocked: true)] {
+            _ = try await client.perform(action, account: selected)
+        }
+        XCTAssertEqual(UserSectionRouteProtocol.requests.count, 2)
+        for request in UserSectionRouteProtocol.requests {
+            XCTAssertEqual(request.url?.scheme, "https")
+            XCTAssertEqual(request.url?.host, "www.reddit.com")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "reddit_session=synthetic-selected")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Modhash"), "synthetic-modhash")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        }
+        do {
+            _ = try await client.perform(.follow(username: "reader", following: true), account: AccountID())
+            XCTFail("Missing website session should require login")
+        } catch {
+            XCTAssertEqual(error as? RedditClientError, .authenticationRequired)
+        }
+        XCTAssertEqual(UserSectionRouteProtocol.requests.count, 2)
+    }
+
+    func testUnblockUsesTheSignedInUsersIDAndWebsiteSession() async throws {
+        UserSectionRouteProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UserSectionRouteProtocol.self]
+        let account = AccountID()
+        let vault = InMemoryCredentialVault(values: [
+            account: RedditCredential(cookieValue: "synthetic-selected", modhash: "synthetic-modhash")
+        ])
+        let client = URLSessionRedditClient(credentialVault: vault, sessionConfiguration: configuration)
+        _ = try await client.perform(.block(username: "reader", blocked: false), account: account)
+        let requests = UserSectionRouteProtocol.requests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.first?.url?.path, "/user/me/about.json")
+        let mutation = try XCTUnwrap(requests.last)
+        XCTAssertEqual(mutation.url?.path, "/api/unfriend")
+        XCTAssertEqual(mutation.httpMethod, "POST")
+        let body = try XCTUnwrap(mutation.httpBody ?? mutation.httpBodyStream.flatMap { stream in
+            stream.open()
+            defer { stream.close() }
+            var bytes = [UInt8](repeating: 0, count: 4096)
+            let count = stream.read(&bytes, maxLength: bytes.count)
+            return count > 0 ? Data(bytes.prefix(count)) : nil
+        })
+        var components = URLComponents()
+        components.percentEncodedQuery = String(decoding: body, as: UTF8.self)
+        let fields = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(fields["name"], "reader")
+        XCTAssertEqual(fields["type"], "enemy")
+        XCTAssertEqual(fields["container"], "t2_abc123")
+        for request in requests {
+            XCTAssertEqual(request.url?.scheme, "https")
+            XCTAssertEqual(request.url?.host, "www.reddit.com")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "reddit_session=synthetic-selected")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        }
+        XCTAssertEqual(mutation.value(forHTTPHeaderField: "X-Modhash"), "synthetic-modhash")
+    }
+
+    func testUnblockDoesNotSendAMutationWithoutTheSignedInUsersID() async throws {
+        UserSectionRouteProtocol.reset()
+        UserSectionRouteProtocol.identityData = Data(#"{"data":{"name":"selected"}}"#.utf8)
+        defer { UserSectionRouteProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UserSectionRouteProtocol.self]
+        let account = AccountID()
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic-selected")])
+        let client = URLSessionRedditClient(credentialVault: vault, sessionConfiguration: configuration)
+        do {
+            _ = try await client.perform(.block(username: "reader", blocked: false), account: account)
+            XCTFail("Unblock must require a valid signed-in user ID")
+        } catch {
+            XCTAssertEqual(error as? RedditClientError, .authenticationRequired)
+        }
+        XCTAssertEqual(UserSectionRouteProtocol.requests.count, 1)
+        XCTAssertEqual(UserSectionRouteProtocol.requests.first?.httpMethod, "GET")
+    }
 
     func testUserSectionListingUsesTheSectionRouteWithoutASortPathSegment() async throws {
         UserSectionRouteProtocol.reset()
@@ -630,6 +733,19 @@ private final class UserSectionRouteProtocol: URLProtocol, @unchecked Sendable {
     private final class RequestStorage: @unchecked Sendable {
         let lock = NSLock()
         var values: [URLRequest] = []
+        var identityData = Data(#"{"data":{"id":"abc123","name":"selected"}}"#.utf8)
+    }
+    static var identityData: Data {
+        get {
+            storage.lock.lock()
+            defer { storage.lock.unlock() }
+            return storage.identityData
+        }
+        set {
+            storage.lock.lock()
+            defer { storage.lock.unlock() }
+            storage.identityData = newValue
+        }
     }
     static var requests: [URLRequest] {
         storage.lock.lock()
@@ -640,6 +756,7 @@ private final class UserSectionRouteProtocol: URLProtocol, @unchecked Sendable {
         storage.lock.lock()
         defer { storage.lock.unlock() }
         storage.values = []
+        storage.identityData = Data(#"{"data":{"id":"abc123","name":"selected"}}"#.utf8)
     }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -648,12 +765,13 @@ private final class UserSectionRouteProtocol: URLProtocol, @unchecked Sendable {
         Self.storage.values.append(request)
         Self.storage.lock.unlock()
         let url = request.url!
-        let data = Data(#"""
+        let listingData = Data(#"""
         {"data":{"after":"t3_next","before":null,"children":[
           {"kind":"t3","data":{"id":"saved","name":"t3_saved","title":"A saved post","subreddit":"swift","permalink":"/r/swift/comments/saved/title/","author":"reader"}},
           {"kind":"t1","data":{"id":"savedcomment","name":"t1_savedcomment","parent_id":"t3_saved","body":"A saved comment","subreddit":"swift","author":"reader","link_title":"A saved post","link_permalink":"https://www.reddit.com/r/swift/comments/saved/title/"}}
         ]}}
         """#.utf8)
+        let data = url.path == "/user/me/about.json" ? Self.identityData : listingData
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)

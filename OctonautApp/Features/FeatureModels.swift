@@ -756,8 +756,24 @@ enum UserSectionContent: String, CaseIterable, Identifiable, Hashable, Sendable 
     var id: String { rawValue }
 }
 
-/// One page of a user-section listing. The screen that asked for it owns the
-/// rows, so pushing one section on top of another cannot cross the two.
+/// Keeps only the removed row, so rollback preserves other saved-list edits.
+struct UserSectionPostRemoval {
+    let post: PostCardModel
+    let index: Int
+
+    init?(postID: String, posts: inout [PostCardModel]) {
+        guard let index = posts.firstIndex(where: { $0.id == postID }) else { return nil }
+        self.index = index
+        post = posts.remove(at: index)
+    }
+
+    func restore(in posts: inout [PostCardModel]) {
+        guard !posts.contains(where: { $0.id == post.id }) else { return }
+        posts.insert(post, at: min(index, posts.count))
+    }
+}
+
+/// One page of a profile section, owned by the screen that requested it.
 struct UserSectionPage: Sendable {
     var posts: [PostCardModel] = []
     var comments: [UserCommentCardModel] = []
@@ -769,6 +785,21 @@ enum FeatureSearchScope: String, CaseIterable, Identifiable, Hashable, Sendable 
     case communities = "Communities"
     case users = "Users"
     var id: String { rawValue }
+}
+
+enum OctonautUserDestination {
+    static func route(for username: String) -> FeatureRoute? {
+        guard !username.isEmpty, username.count <= 20,
+              username.unicodeScalars.allSatisfy({
+                  CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-").contains($0)
+              }) else { return nil }
+        return .account(username)
+    }
+
+    static func profileURL(for username: String) -> URL? {
+        guard route(for: username) != nil else { return nil }
+        return URL(string: "https://www.reddit.com/user/\(username)/")
+    }
 }
 
 enum FeatureRoute: Hashable {
@@ -1807,6 +1838,10 @@ final class OctonautFeatureStore {
         comments.removeAll()
         inbox.removeAll()
         inboxState = accountID == nil ? .empty : .idle
+        userProfile = nil
+        userProfilePosts.removeAll()
+        userProfileComments.removeAll()
+        userProfileState = .idle
     }
 
     private func domainFeed(for descriptor: FeedDescriptorModel) -> FeedDescriptor {
@@ -1944,6 +1979,38 @@ final class OctonautFeatureStore {
                 save(postID: postID)
             }
             throw error
+        }
+    }
+
+    func performProfileAction(_ action: RedditAction, username: String, accountID: AccountID) async throws {
+        guard self.accountID == accountID, OctonautUserDestination.route(for: username) != nil else {
+            throw RedditClientError.authenticationRequired
+        }
+        switch action {
+        case .follow(let target, _), .block(let target, _):
+            guard target == username else { throw RedditClientError.invalidURL }
+        default:
+            throw RedditClientError.invalidURL
+        }
+        let generation = accountGeneration
+        let result: ActionResult
+        if let authenticated {
+            result = try await authenticated.perform(action, accountID: accountID)
+        } else if let reddit {
+            result = try await reddit.perform(action, account: accountID)
+        } else {
+            throw RedditClientError.authenticationRequired
+        }
+        guard result.succeeded else {
+            throw RedditClientError.reddit(errors: [result.message ?? "Reddit could not complete this action."])
+        }
+        await UserProfileCache.shared.remove(for: accountID)
+        guard isCurrentAccount(accountID, generation: generation),
+              userProfile?.reference.username.caseInsensitiveCompare(username) == .orderedSame else { return }
+        switch action {
+        case .follow(_, let following): userProfile?.isFollowing = following
+        case .block(_, let blocked): userProfile?.isBlocked = blocked
+        default: break
         }
     }
 

@@ -1239,7 +1239,7 @@ final class DomainTests: XCTestCase {
               "icon_img":"https://example.com/avatar.png",
               "created_utc":1700000000,
               "total_karma":12345,
-              "subreddit":{"public_description":"Swift and native UI."},
+              "subreddit":{"public_description":"Swift and native UI.","user_is_subscriber":true},
               "is_friend":true
             }
             """#.utf8)
@@ -1419,8 +1419,7 @@ final class DomainTests: XCTestCase {
 
     @MainActor
     func testVideoLooperRestartsPlaybackWhenTheItemEnds() async throws {
-        let url = try XCTUnwrap(URL(string: "https://preview.redd.it/example.gif?format=mp4"))
-        let item = AVPlayerItem(url: url)
+        let item = AVPlayerItem(asset: AVMutableComposition())
         let player = AVPlayer(playerItem: item)
         let looper = OctonautVideoLooper()
 
@@ -1537,6 +1536,55 @@ final class DomainTests: XCTestCase {
 }
 
 extension DomainTests {
+    @MainActor
+    func testCancelledRecoveryDoesNotAdoptItsLateResult() async {
+        let recovery = OctonautPlaybackRecovery()
+        let started = expectation(description: "Recovery started")
+        let adopted = expectation(description: "Cancelled result adopted")
+        adopted.isInverted = true
+        var pending: CheckedContinuation<Int, Never>?
+        recovery.start(load: {
+            await withCheckedContinuation { continuation in
+                pending = continuation
+                started.fulfill()
+            }
+        }, onReady: { _ in adopted.fulfill() })
+        await fulfillment(of: [started], timeout: 1)
+        recovery.cancel()
+        pending?.resume(returning: 1)
+        await fulfillment(of: [adopted], timeout: 0.1)
+    }
+
+    @MainActor
+    func testNewRecoveryReplacesThePendingRequest() async {
+        let recovery = OctonautPlaybackRecovery()
+        let started = expectation(description: "First recovery started")
+        let current = expectation(description: "Current result adopted")
+        let stale = expectation(description: "Old result adopted")
+        stale.isInverted = true
+        var pending: CheckedContinuation<Int, Never>?
+        recovery.start(load: {
+            await withCheckedContinuation { continuation in
+                pending = continuation
+                started.fulfill()
+            }
+        }, onReady: { _ in stale.fulfill() })
+        await fulfillment(of: [started], timeout: 1)
+        recovery.start(load: { 2 }, onReady: { value in
+            XCTAssertEqual(value, 2)
+            current.fulfill()
+        })
+        pending?.resume(returning: 1)
+        await fulfillment(of: [current, stale], timeout: 0.1)
+    }
+
+    func testStreamingVideoDimensionsUsePortraitSizeAndIgnoreUnloadedSizes() {
+        XCTAssertEqual(OctonautVideoDimensions.aspectRatio(for: CGSize(width: 720, height: 1280)), 0.5625)
+        XCTAssertNil(OctonautVideoDimensions.aspectRatio(for: .zero))
+        XCTAssertNil(OctonautVideoDimensions.aspectRatio(for: CGSize(width: 720, height: 0)))
+        XCTAssertNil(OctonautVideoDimensions.aspectRatio(for: CGSize(width: CGFloat.infinity, height: 1280)))
+    }
+
     func testLinkHostNameDropsOnlyALeadingWWW() throws {
         func host(_ string: String) throws -> String {
             LinkHostName.display(for: try XCTUnwrap(URL(string: string)))
@@ -1550,5 +1598,96 @@ extension DomainTests {
         XCTAssertEqual(try host("https://wwwtheverge.com"), "wwwtheverge.com")
         // Nothing to take a host from falls back to the whole thing.
         XCTAssertEqual(try host("mailto:someone@example.com"), "mailto:someone@example.com")
+    }
+}
+
+
+extension DomainTests {
+    func testUsernameProfileDestinationsRejectDeletedUsersAndUnsafePaths() {
+        XCTAssertEqual(OctonautUserDestination.route(for: "some_user-1"), .account("some_user-1"))
+        for invalid in ["", "[deleted]", "../settings", "user?x=1", "https://example.com", "user name"] {
+            XCTAssertNil(OctonautUserDestination.route(for: invalid))
+            XCTAssertNil(OctonautUserDestination.profileURL(for: invalid))
+        }
+        XCTAssertEqual(OctonautUserDestination.profileURL(for: "some_user")?.absoluteString,
+                       "https://www.reddit.com/user/some_user/")
+    }
+
+    func testFollowUsesProfileSubscriptionAndUnfollowReversesIt() {
+        let follow = URLSessionRedditClient.mutationRequest(for: .follow(username: "some_user", following: true))
+        XCTAssertEqual(follow.method, "POST")
+        XCTAssertEqual(follow.path, "/api/subscribe")
+        XCTAssertEqual(follow.fields["sr_name"], "u_some_user")
+        XCTAssertEqual(follow.fields["action"], "sub")
+        let unfollow = URLSessionRedditClient.mutationRequest(for: .follow(username: "some_user", following: false))
+        XCTAssertEqual(unfollow.fields["action"], "unsub")
+    }
+
+    func testBlockRequestNamesTheSelectedUser() {
+        let request = URLSessionRedditClient.mutationRequest(for: .block(username: "some_user", blocked: true))
+        XCTAssertEqual(request.path, "/api/block_user")
+        XCTAssertEqual(request.fields["name"], "some_user")
+        XCTAssertEqual(request.fields["api_type"], "json")
+    }
+
+    func testProfileFollowingUsesSubscriptionRatherThanFriendStatus() throws {
+        let data = Data(#"{"data":{"name":"some_user","is_friend":false,"subreddit":{"user_is_subscriber":true}}}"#.utf8)
+        XCTAssertTrue(try RedditJSONCodec.decodeUserProfile(data).isFollowing)
+        let friend = Data(#"{"data":{"name":"some_user","is_friend":true,"subreddit":{"user_is_subscriber":false}}}"#.utf8)
+        XCTAssertFalse(try RedditJSONCodec.decodeUserProfile(friend).isFollowing)
+    }
+}
+
+
+extension DomainTests {
+    @MainActor
+    func testProfileActionsUpdateOnlyAfterSuccessAndAccountSwitchClearsProfile() async throws {
+        let account = AccountID()
+        let store = OctonautFeatureStore(reddit: FixtureRedditClient(), accountID: account)
+        await store.loadUserProfile(username: "reader", forceRefresh: true)
+        try await store.performProfileAction(.follow(username: "reader", following: true), username: "reader", accountID: account)
+        XCTAssertEqual(store.userProfile?.isFollowing, true)
+        try await store.performProfileAction(.follow(username: "reader", following: false), username: "reader", accountID: account)
+        XCTAssertEqual(store.userProfile?.isFollowing, false)
+        try await store.performProfileAction(.block(username: "reader", blocked: true), username: "reader", accountID: account)
+        XCTAssertEqual(store.userProfile?.isBlocked, true)
+        try await store.performProfileAction(.block(username: "reader", blocked: false), username: "reader", accountID: account)
+        XCTAssertEqual(store.userProfile?.isBlocked, false)
+        store.setAccountID(AccountID())
+        XCTAssertNil(store.userProfile)
+        XCTAssertTrue(store.userProfilePosts.isEmpty)
+        do {
+            try await store.performProfileAction(.follow(username: "reader", following: true), username: "reader", accountID: account)
+            XCTFail("Old account must not perform a profile action")
+        } catch {
+            XCTAssertEqual(error as? RedditClientError, .authenticationRequired)
+        }
+    }
+
+    @MainActor
+    func testFailedProfileActionPreservesRelationshipState() async {
+        let account = AccountID()
+        let client = FixtureRedditClient(actionResult: ActionResult(succeeded: false, message: "Action denied"))
+        let store = OctonautFeatureStore(reddit: client, accountID: account)
+        await store.loadUserProfile(username: "reader", forceRefresh: true)
+        do {
+            try await store.performProfileAction(.follow(username: "reader", following: true), username: "reader", accountID: account)
+            XCTFail("Failed action must report the error")
+        } catch {
+            XCTAssertEqual(error as? RedditClientError, .reddit(errors: ["Action denied"]))
+        }
+        XCTAssertEqual(store.userProfile?.isFollowing, false)
+    }
+}
+
+
+extension DomainTests {
+    func testUnblockRemovesTheBlockedRelationship() {
+        let request = URLSessionRedditClient.mutationRequest(for: .block(username: "reader", blocked: false))
+        XCTAssertEqual(request.method, "POST")
+        XCTAssertEqual(request.path, "/api/unfriend")
+        XCTAssertEqual(request.fields["name"], "reader")
+        XCTAssertEqual(request.fields["type"], "enemy")
+        XCTAssertNil(request.fields["container"])
     }
 }

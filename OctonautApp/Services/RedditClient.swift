@@ -350,7 +350,25 @@ actor URLSessionRedditClient: RedditClient {
     }
 
     func perform(_ action: RedditAction, account: AccountID) async throws -> ActionResult {
-        let request = Self.mutationRequest(for: action)
+        var request = Self.mutationRequest(for: action)
+        if case .block(_, false) = action {
+            let identityData = try await requestData(
+                method: "GET",
+                path: "/user/me/about.json",
+                query: [URLQueryItem(name: "raw_json", value: "1")],
+                body: nil,
+                account: account,
+                retryable: true,
+                responseCachePolicy: .reloadIgnoringCache
+            )
+            let envelope = try JSONSerialization.jsonObject(with: identityData) as? [String: Any]
+            let identity = envelope?["data"] as? [String: Any] ?? envelope
+            guard let id = identity?["id"] as? String, !id.isEmpty,
+                  id.unicodeScalars.allSatisfy({
+                      CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789").contains($0)
+                  }) else { throw RedditClientError.authenticationRequired }
+            request.fields["container"] = "t2_\(id)"
+        }
         let data = try await requestData(
             method: request.method,
             path: request.path,
@@ -624,9 +642,12 @@ actor URLSessionRedditClient: RedditClient {
                 ]
             )
         case .block(let username, let blocked):
-            return ("POST", "/api/block_user", [], ["name": username, "container": blocked ? "" : "unblock"])
+            if blocked {
+                return ("POST", "/api/block_user", [], ["name": username, "api_type": "json"])
+            }
+            return ("POST", "/api/unfriend", [], ["name": username, "type": "enemy", "api_type": "json"])
         case .follow(let username, let following):
-            return ("POST", "/api/friend", [], ["name": username, "note": following ? "" : "unfollow"])
+            return ("POST", "/api/subscribe", [], ["sr_name": "u_\(username)", "action": following ? "sub" : "unsub", "api_type": "json"])
         }
     }
 

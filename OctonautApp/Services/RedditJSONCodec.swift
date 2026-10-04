@@ -291,7 +291,7 @@ enum RedditJSONCodec {
             karma: totalKarma,
             about: about,
             isBlocked: object["is_blocked"]?.boolValue ?? object["block"]?.boolValue ?? false,
-            isFollowing: object["is_friend"]?.boolValue ?? false
+            isFollowing: object["subreddit"]?.objectValue?["user_is_subscriber"]?.boolValue ?? false
         )
     }
 

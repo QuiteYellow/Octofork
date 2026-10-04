@@ -1,4 +1,5 @@
 import AVKit
+import Combine
 import Foundation
 import Network
 import Observation
@@ -963,6 +964,37 @@ private struct OctonautEmbeddedVideoView: UIViewRepresentable {
     }
 }
 
+@MainActor
+final class OctonautPlaybackRecovery {
+    private var task: Task<Void, Never>?
+    private var requestID = UUID()
+
+    func cancel() {
+        requestID = UUID()
+        task?.cancel()
+        task = nil
+    }
+
+    func start<Value>(load: @escaping @MainActor () async -> Value, onReady: @escaping @MainActor (Value) -> Void) {
+        cancel()
+        let id = requestID
+        task = Task { @MainActor in
+            let value = await load()
+            guard !Task.isCancelled, requestID == id else { return }
+            task = nil
+            onReady(value)
+        }
+    }
+}
+
+enum OctonautVideoDimensions {
+    static func aspectRatio(for size: CGSize) -> CGFloat? {
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return nil }
+        return size.width / size.height
+    }
+}
+
 struct OctonautVideoPlayer: View {
     let url: URL
     var audioURL: URL?
@@ -981,6 +1013,7 @@ struct OctonautVideoPlayer: View {
     @State private var positionObserver: Any?
     @State private var failureObservers: [any NSObjectProtocol] = []
     @State private var recoveryAttempts = 0
+    @State private var recovery = OctonautPlaybackRecovery()
     @State private var muxOutcome: OctonautMuxOutcome = .notApplicable
     @State private var coordinator = OctonautPlaybackCoordinator.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -989,7 +1022,7 @@ struct OctonautVideoPlayer: View {
     /// only kind that comes from the preloader.
     private var needsComposing: Bool { audioURL != nil && audioURL != url }
 
-    private var aspectRatio: CGFloat { measuredAspectRatio ?? aspectRatioHint ?? 16 / 9 }
+    private var aspectRatio: CGFloat { aspectRatioHint ?? measuredAspectRatio ?? 16 / 9 }
 
     /// The viewer takes over playback while it is open.
     private var shouldPlay: Bool { autoplay && !coordinator.isFullScreenActive }
@@ -1009,6 +1042,20 @@ struct OctonautVideoPlayer: View {
                     .overlay(alignment: .topLeading) {
                         OctonautMuxWarningBadge(outcome: muxOutcome)
                     }
+                    .onReceive(
+                        player.publisher(for: \.currentItem)
+                            .map { item -> AnyPublisher<CGSize, Never> in
+                                item?.publisher(for: \.presentationSize).eraseToAnyPublisher()
+                                    ?? Just(CGSize.zero).eraseToAnyPublisher()
+                            }
+                            .switchToLatest()
+                    ) { size in
+                        // HLS exposes its dimensions once playback loads, even
+                        // when the listing and asset tracks have none.
+                        if let ratio = OctonautVideoDimensions.aspectRatio(for: size) {
+                            measuredAspectRatio = ratio
+                        }
+                    }
             } else {
                 ZStack {
                     Color.black
@@ -1019,9 +1066,11 @@ struct OctonautVideoPlayer: View {
         }
         .task(id: playbackRequest) {
             await OctonautAudioSession.prepareForMutedFeedPlayback()
+            guard !Task.isCancelled else { return }
             playbackRequested = shouldPlay
             recoveryAttempts = 0
             teardownPlayer()
+            measuredAspectRatio = nil
 
             // Nothing to compose means nothing to wait for. Building the
             // player here removes the state where the row has none, which is
@@ -1093,6 +1142,7 @@ struct OctonautVideoPlayer: View {
                 coordinator.record(player.currentTime().seconds, for: url)
             }
             player?.pause()
+            recovery.cancel()
             removePositionObserver()
             removeFailureObservers()
             looper.detach()
@@ -1132,6 +1182,7 @@ struct OctonautVideoPlayer: View {
     }
 
     private func teardownPlayer() {
+        recovery.cancel()
         removePositionObserver()
         removeFailureObservers()
         player?.pause()
@@ -1165,16 +1216,20 @@ struct OctonautVideoPlayer: View {
             return
         }
 
-        Task {
-            let playback = await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
+        recovery.start(load: {
+            await OctonautAVPlayerFactory.makePlayer(videoURL: url, audioURL: audioURL)
+        }, onReady: { playback in
             if aspectRatioHint == nil {
                 measuredAspectRatio = playback.aspectRatio
             }
-            if resumeAt > 0 {
-                await playback.player.seek(to: CMTime(seconds: resumeAt, preferredTimescale: 600))
-            }
             adopt(playback.player, muxOutcome: playback.muxOutcome)
-        }
+            if resumeAt > 0 {
+                playback.player.seek(
+                    to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                    completionHandler: { _ in }
+                )
+            }
+        })
     }
 
     /// Watches for the two ways an item dies mid-flight. Without this a video
