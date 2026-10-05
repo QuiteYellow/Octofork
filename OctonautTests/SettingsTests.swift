@@ -3,6 +3,59 @@ import XCTest
 
 @MainActor
 final class SettingsTests: XCTestCase {
+    func testConcurrentBlockedRequestsShareCookieRefresh() async throws {
+        AnonymousBootstrapProtocol.reset(seedStatuses: [200, 200], delaySeed: true,
+                                         jsonStatuses: [403, 403, 403, 200, 200, 200])
+        let client = makeAnonymousBootstrapClient()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<3 {
+                group.addTask {
+                    _ = try await client.search(RedditSearchRequest(query: UUID().uuidString), account: nil)
+                }
+            }
+            try await group.waitForAll()
+        }
+        XCTAssertEqual(AnonymousBootstrapProtocol.seedRequests.count, 2)
+        XCTAssertEqual(AnonymousBootstrapProtocol.jsonRequests.count, 6)
+    }
+
+    func testBlockedAnonymousRequestRefreshesCookiesAndRetriesOnce() async throws {
+        AnonymousBootstrapProtocol.reset(seedStatuses: [200, 200], jsonStatuses: [403, 200])
+        let client = makeAnonymousBootstrapClient()
+        _ = try await client.search(RedditSearchRequest(query: UUID().uuidString), account: nil)
+        XCTAssertEqual(AnonymousBootstrapProtocol.seedRequests.count, 2)
+        XCTAssertEqual(AnonymousBootstrapProtocol.jsonRequests.count, 2)
+        XCTAssertEqual(AnonymousBootstrapProtocol.jsonRequests.last?.cachePolicy, .reloadIgnoringLocalCacheData)
+    }
+
+    func testPersistentAnonymousBlockStopsAfterOneCookieRefresh() async throws {
+        AnonymousBootstrapProtocol.reset(seedStatuses: [403, 403], jsonStatuses: [403, 403])
+        let client = makeAnonymousBootstrapClient()
+        do {
+            _ = try await client.search(RedditSearchRequest(query: UUID().uuidString), account: nil)
+            XCTFail("Expected Reddit's block to be reported")
+        } catch {
+            XCTAssertEqual(error as? RedditClientError, .anonymousAccessBlocked)
+        }
+        XCTAssertEqual(AnonymousBootstrapProtocol.seedRequests.count, 2)
+        XCTAssertEqual(AnonymousBootstrapProtocol.jsonRequests.count, 2)
+    }
+
+    func testBlockedAuthenticatedRequestDoesNotRefreshAnonymousCookies() async throws {
+        AnonymousBootstrapProtocol.reset(seedStatuses: [], jsonStatuses: [403])
+        let account = AccountID()
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic-session")])
+        let client = makeAnonymousBootstrapClient(vault: vault)
+        do {
+            _ = try await client.search(RedditSearchRequest(query: UUID().uuidString), account: account)
+            XCTFail("Expected access denied")
+        } catch {
+            XCTAssertEqual(error as? RedditClientError, .accessDenied)
+        }
+        XCTAssertTrue(AnonymousBootstrapProtocol.seedRequests.isEmpty)
+        XCTAssertEqual(AnonymousBootstrapProtocol.jsonRequests.count, 1)
+    }
+
     func testConcurrentAnonymousRequestsShareCookieBootstrap() async throws {
         AnonymousBootstrapProtocol.reset(seedStatuses: [200], delaySeed: true)
         let client = makeAnonymousBootstrapClient()
@@ -1049,15 +1102,17 @@ private final class AnonymousBootstrapProtocol: URLProtocol, @unchecked Sendable
         let lock = NSLock()
         var requests: [URLRequest] = []
         var seedStatuses: [Int?] = []
+        var jsonStatuses: [Int] = []
         var delaySeed = false
     }
     private static let storage = Storage()
 
-    static func reset(seedStatuses: [Int?], delaySeed: Bool = false) {
+    static func reset(seedStatuses: [Int?], delaySeed: Bool = false, jsonStatuses: [Int] = []) {
         storage.lock.lock()
         defer { storage.lock.unlock() }
         storage.requests = []
         storage.seedStatuses = seedStatuses
+        storage.jsonStatuses = jsonStatuses
         storage.delaySeed = delaySeed
     }
 
@@ -1076,8 +1131,12 @@ private final class AnonymousBootstrapProtocol: URLProtocol, @unchecked Sendable
         let isSeed = request.url?.path == "/"
         Self.storage.lock.lock()
         Self.storage.requests.append(request)
-        let status: Int? = isSeed && !Self.storage.seedStatuses.isEmpty
-            ? Self.storage.seedStatuses.removeFirst() : 200
+        let status: Int?
+        if isSeed {
+            status = Self.storage.seedStatuses.isEmpty ? 200 : Self.storage.seedStatuses.removeFirst()
+        } else {
+            status = Self.storage.jsonStatuses.isEmpty ? 200 : Self.storage.jsonStatuses.removeFirst()
+        }
         let delaySeed = Self.storage.delaySeed
         Self.storage.lock.unlock()
         if isSeed && delaySeed {

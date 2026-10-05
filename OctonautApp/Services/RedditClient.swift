@@ -121,6 +121,7 @@ actor URLSessionRedditClient: RedditClient {
     private let userAgent: String
     private var didBootstrapAnonymousSession = false
     private var anonymousBootstrapTask: Task<Bool, Never>?
+    private var anonymousBootstrapGeneration = 0
     private var isMoreCommentsRequestInFlight = false
     private var moreCommentsRequestWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -471,7 +472,8 @@ actor URLSessionRedditClient: RedditClient {
         body: [String: String]?,
         account: AccountID?,
         responseCachePolicy: ListingRequest.ResponseCachePolicy,
-        websiteHost: String? = nil
+        websiteHost: String? = nil,
+        retryAnonymousBootstrap: Bool = true
     ) async throws -> Data {
         guard let url = makeURL(path: path, query: query, websiteHost: websiteHost) else { throw RedditClientError.invalidURL }
         guard RedditReportTarget.isRedditURL(url) else { throw RedditClientError.invalidURL }
@@ -492,8 +494,11 @@ actor URLSessionRedditClient: RedditClient {
         }
 
         // A cache hit should not wait for Reddit's anonymous cookie bootstrap.
+        let bootstrapGeneration: Int
         if account == nil {
-            await bootstrapAnonymousSessionIfNeeded()
+            bootstrapGeneration = await bootstrapAnonymousSessionIfNeeded()
+        } else {
+            bootstrapGeneration = anonymousBootstrapGeneration
         }
 
         if let body {
@@ -528,7 +533,23 @@ actor URLSessionRedditClient: RedditClient {
         }
 
         guard let http = response as? HTTPURLResponse else { throw RedditClientError.invalidResponse }
-        try Self.validateResponse(data, response: http, isAnonymous: account == nil)
+        do {
+            try Self.validateResponse(data, response: http, isAnonymous: account == nil)
+        } catch let error as RedditClientError {
+            guard error == .anonymousAccessBlocked, account == nil, method == "GET",
+                  retryAnonymousBootstrap else { throw error }
+            try Task.checkCancellation()
+            // Another blocked request may already have refreshed the cookies.
+            // Keep that result, or join its in-flight setup, instead of starting over.
+            if anonymousBootstrapGeneration == bootstrapGeneration {
+                didBootstrapAnonymousSession = false
+            }
+            return try await sendRequest(
+                method: method, path: path, query: query, body: body, account: nil,
+                responseCachePolicy: .reloadIgnoringCache, websiteHost: websiteHost,
+                retryAnonymousBootstrap: false
+            )
+        }
         if let result = try? RedditJSONCodec.decodeActionResult(data),
            !result.succeeded,
            let message = result.message {
@@ -577,13 +598,18 @@ actor URLSessionRedditClient: RedditClient {
     /// - It fetched `old.reddit.com`, which is not the host the JSON calls
     ///   use, and which answered those calls with a 404 when measured on
     ///   2026-09-28.
-    private func bootstrapAnonymousSessionIfNeeded() async {
-        guard !didBootstrapAnonymousSession else { return }
+    private func bootstrapAnonymousSessionIfNeeded() async -> Int {
+        guard !didBootstrapAnonymousSession else { return anonymousBootstrapGeneration }
         if let task = anonymousBootstrapTask {
-            _ = await task.value
-            return
+            let generation = anonymousBootstrapGeneration
+            let succeeded = await task.value
+            if anonymousBootstrapGeneration == generation {
+                didBootstrapAnonymousSession = succeeded
+                anonymousBootstrapTask = nil
+            }
+            return generation
         }
-        guard let url = URL(string: "https://www.reddit.com/") else { return }
+        guard let url = URL(string: "https://www.reddit.com/") else { return anonymousBootstrapGeneration }
         var request = URLRequest(url: url)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(
@@ -599,11 +625,17 @@ actor URLSessionRedditClient: RedditClient {
                   let http = response as? HTTPURLResponse else { return false }
             return (200..<300).contains(http.statusCode)
         }
+        anonymousBootstrapGeneration += 1
+        let generation = anonymousBootstrapGeneration
         anonymousBootstrapTask = task
-        // Only the caller that created this task updates the state. Other
-        // callers wait for the same request without clearing a later retry.
-        didBootstrapAnonymousSession = await task.value
-        anonymousBootstrapTask = nil
+        let succeeded = await task.value
+        // A waiter may finish this setup before its creator resumes. Only
+        // update the state if a newer setup has not started in the meantime.
+        if anonymousBootstrapGeneration == generation {
+            didBootstrapAnonymousSession = succeeded
+            anonymousBootstrapTask = nil
+        }
+        return generation
     }
 
     private func makeURL(path: String, query: [URLQueryItem], websiteHost: String? = nil) -> URL? {
