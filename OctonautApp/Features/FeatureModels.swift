@@ -974,6 +974,12 @@ final class OctonautFeatureStore {
     @ObservationIgnored private var loadedFeed: FeedDescriptorModel?
     @ObservationIgnored private var feedCache: [FeedCacheKey: FeedCacheEntry] = [:]
     @ObservationIgnored private let feedCacheFreshness: TimeInterval = 15 * 60
+    /// The feed whose remembered sort has already been resolved, so arriving
+    /// at a feed reads the record once rather than on every appearance -- and
+    /// so a sort chosen while reading is not immediately overwritten by the
+    /// stored one.
+    @ObservationIgnored private var sortResolvedForFeedKey: String?
+    @ObservationIgnored private var sortResolvedSettingsRevision: UInt?
     @ObservationIgnored private var detailCache: [DetailCacheKey: DetailCacheEntry] = [:]
     @ObservationIgnored private let detailCacheFreshness: TimeInterval = 10 * 60
     @ObservationIgnored private let detailCacheCapacity = 20
@@ -1074,9 +1080,7 @@ final class OctonautFeatureStore {
         self.persistence = persistence
         self.semanticFilter = intelligence.map(SemanticFilterEngine.init(service:))
         if let settings {
-            // `default` asks Reddit for its own order, which the sort control
-            // has no row for. Best is the row it lands on.
-            selectedSort = settings.defaultPostSort == .default ? .best : settings.defaultPostSort
+            selectedSort = defaultSort
             selectedTopTime = settings.defaultTopTime
         }
         if reddit != nil {
@@ -1185,9 +1189,17 @@ final class OctonautFeatureStore {
     }
 
     func refreshPosts(for descriptor: FeedDescriptorModel = .popular, forceRefresh: Bool = false) async {
-        if screenshotMode { return }
+        if screenshotMode || Task.isCancelled { return }
         let requestID = UUID()
         feedRequestID = requestID
+        let selectedAccountID = accountID
+        let selectedGeneration = accountGeneration
+        let sortSettingsRevision = settings?.feedSortPreferenceRevision
+        // Resolve before computing the cache key, but keep the lookup tied to this load.
+        await resolveStoredSort(for: descriptor, requestID: requestID)
+        guard feedRequestID == requestID, !Task.isCancelled,
+              isCurrentAccount(selectedAccountID, generation: selectedGeneration),
+              settings?.feedSortPreferenceRevision == sortSettingsRevision else { return }
         let filterRevision = Int(settings?.filterRevision ?? 0)
         let cacheKey = feedCacheKey(for: descriptor)
         var hasWarmContent = loadedFeed == descriptor && !posts.isEmpty
@@ -1219,8 +1231,6 @@ final class OctonautFeatureStore {
             return
         }
 
-        let selectedAccountID = accountID
-        let selectedGeneration = accountGeneration
         do {
             let listing = try await reddit.listing(
                 ListingRequest(
@@ -1882,6 +1892,127 @@ final class OctonautFeatureStore {
         selectedSort.acceptsTopTime ? selectedTopTime : nil
     }
 
+    /// The account a preference belongs to. Deliberately not
+    /// `accountContextKey`, which carries a session generation: that changes
+    /// within a run and would orphan every record written before it.
+    private var feedPreferenceAccountScope: String {
+        accountID?.description ?? "anonymous"
+    }
+
+    /// The key a feed's sort is remembered under, or nil when it is not
+    /// remembered at all.
+    ///
+    /// The two settings decide which feeds take part: communities under
+    /// "Remember sort per community", multireddits and custom feeds under
+    /// "Remember sort per multireddit". Home, Popular and All are shared
+    /// listings rather than somewhere the reader keeps a standing
+    /// preference, so they are not covered by either.
+    private func feedPreferenceKey(for descriptor: FeedDescriptorModel) -> String? {
+        guard let settings else { return nil }
+        switch descriptor.kind {
+        case .community:
+            guard settings.rememberSortPerCommunity else { return nil }
+            return "community:\(IDNormalization.community(descriptor.name))"
+        case .multireddit:
+            guard settings.rememberSortPerMultireddit else { return nil }
+            return "multireddit:\(IDNormalization.community(descriptor.name))"
+        case .custom:
+            guard settings.rememberSortPerMultireddit else { return nil }
+            return "custom:\(descriptor.customFeedID?.uuidString ?? descriptor.name)"
+        case .home, .popular, .all:
+            return nil
+        }
+    }
+
+    /// Whether the reader has asked for sort to be remembered anywhere.
+    ///
+    /// With both settings off, sort stays what it has always been: one value
+    /// that follows the reader between feeds for the session. Turning either
+    /// on makes sort a property of the feed, which means a feed with no
+    /// record of its own opens at the default rather than inheriting
+    /// whatever the last feed was sorted by.
+    private var remembersSortAnywhere: Bool {
+        (settings?.rememberSortPerCommunity ?? false) || (settings?.rememberSortPerMultireddit ?? false)
+    }
+
+    /// `default` asks Reddit for its own order, which the sort control has no
+    /// row for. Best is the row it lands on.
+    private var defaultSort: PostSort {
+        let configured = settings?.defaultPostSort ?? .best
+        return configured == .default ? .best : configured
+    }
+
+    private func invalidateSortResolutionIfSettingsChanged() {
+        let revision = settings?.feedSortPreferenceRevision
+        guard sortResolvedSettingsRevision != revision else { return }
+        sortResolvedSettingsRevision = revision
+        sortResolvedForFeedKey = nil
+    }
+
+    /// Applies the sort this feed was last read with, on arrival.
+    private func resolveStoredSort(for descriptor: FeedDescriptorModel, requestID: UUID) async {
+        invalidateSortResolutionIfSettingsChanged()
+        guard remembersSortAnywhere else { return }
+        let scope = feedPreferenceAccountScope
+        let generation = accountGeneration
+        let settingsRevision = settings?.feedSortPreferenceRevision
+        let storedKey = feedPreferenceKey(for: descriptor)
+        // The latch carries the account, so switching account resolves again
+        // instead of leaving the previous reader's sort in place.
+        let latchKey = "\(scope)|\(storedKey ?? "shared:\(descriptor.kind.rawValue)")"
+        guard sortResolvedForFeedKey != latchKey else { return }
+
+        guard let storedKey else {
+            // A feed with no record of its own opens at the default rather
+            // than inheriting the last feed's sort.
+            sortResolvedForFeedKey = latchKey
+            applyDefaultSort()
+            return
+        }
+
+        let stored: FeedSortPreference?
+        do {
+            stored = try await persistence?.loadFeedPreference(feedKey: storedKey, accountScope: scope)
+        } catch {
+            // A read that failed is not the same as a feed with no record, so
+            // leave the sort alone and let the next arrival try again.
+            return
+        }
+
+        // The latch is claimed after the read, not before it: this suspends,
+        // and in the meantime the reader can pick a sort or change account.
+        guard feedRequestID == requestID, !Task.isCancelled,
+              feedPreferenceAccountScope == scope, accountGeneration == generation,
+              settings?.feedSortPreferenceRevision == settingsRevision,
+              sortResolvedForFeedKey != latchKey else { return }
+        sortResolvedForFeedKey = latchKey
+        guard let stored else {
+            applyDefaultSort()
+            return
+        }
+        selectedSort = stored.sort
+        selectedTopTime = stored.topTime ?? selectedTopTime
+    }
+
+    private func applyDefaultSort() {
+        selectedSort = defaultSort
+        selectedTopTime = settings?.defaultTopTime ?? selectedTopTime
+    }
+
+    private func rememberSort(for descriptor: FeedDescriptorModel) {
+        invalidateSortResolutionIfSettingsChanged()
+        guard let key = feedPreferenceKey(for: descriptor), let persistence else { return }
+        let scope = feedPreferenceAccountScope
+        sortResolvedForFeedKey = "\(scope)|\(key)"
+        let preference = FeedSortPreference(
+            sort: selectedSort,
+            topTime: selectedSort.acceptsTopTime ? selectedTopTime : nil
+        )
+        Task {
+            try? await persistence.saveFeedPreference(preference, feedKey: key, accountScope: scope)
+        }
+    }
+
     private func feedCacheKey(for descriptor: FeedDescriptorModel) -> FeedCacheKey {
         let sort = effectiveSort(for: descriptor)
         return FeedCacheKey(
@@ -1900,6 +2031,7 @@ final class OctonautFeatureStore {
         guard selectedSort != sort || (sort.acceptsTopTime && selectedTopTime != resolvedTopTime) else { return }
         selectedSort = sort
         selectedTopTime = resolvedTopTime
+        rememberSort(for: descriptor)
         posts = []
         nextPage = nil
         filteredPostCount = 0
