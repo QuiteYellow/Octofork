@@ -1681,3 +1681,217 @@ extension DomainTests {
         XCTAssertNil(stored)
     }
 }
+
+
+extension DomainTests {
+    @MainActor
+    func testReenablingRememberSortReloadsCommunityPreference() async throws {
+        try await checkReenabledSort(kind: .community)
+    }
+
+    @MainActor
+    func testReenablingRememberSortReloadsMultiredditPreference() async throws {
+        try await checkReenabledSort(kind: .multireddit)
+    }
+
+    @MainActor
+    private func checkReenabledSort(kind: FeedDescriptorModel.Kind) async throws {
+        let persistence = InMemoryPersistenceStore()
+        let settings = Self.sortSettings(
+            rememberCommunity: kind == .community, rememberMultireddit: kind == .multireddit)
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a"], after: nil))
+        let feed = FeedDescriptorModel(kind: kind, name: "swift")
+        try await persistence.saveFeedPreference(
+            FeedSortPreference(sort: .top, topTime: .week),
+            feedKey: "\(kind.rawValue):swift", accountScope: "anonymous")
+        let store = OctonautFeatureStore(reddit: client, settings: settings, persistence: persistence)
+        await store.refreshPosts(for: feed)
+        XCTAssertEqual(store.selectedSort, .top)
+        if kind == .community {
+            settings.rememberSortPerCommunity = false
+        } else {
+            settings.rememberSortPerMultireddit = false
+        }
+        await store.applySort(.new, for: feed)
+        if kind == .community {
+            settings.rememberSortPerCommunity = true
+        } else {
+            settings.rememberSortPerMultireddit = true
+        }
+        await store.refreshPosts(for: feed)
+        XCTAssertEqual(store.selectedSort, .top)
+        XCTAssertEqual(store.selectedTopTime, .week)
+
+        // Keep the other setting on, then toggle without loading a feed in between.
+        if kind == .community {
+            settings.rememberSortPerMultireddit = true
+        } else {
+            settings.rememberSortPerCommunity = true
+        }
+        await store.refreshPosts(for: feed)
+        try await persistence.saveFeedPreference(
+            FeedSortPreference(sort: .rising),
+            feedKey: "\(kind.rawValue):swift", accountScope: "anonymous")
+        if kind == .community {
+            settings.rememberSortPerCommunity = false
+            settings.rememberSortPerCommunity = true
+        } else {
+            settings.rememberSortPerMultireddit = false
+            settings.rememberSortPerMultireddit = true
+        }
+        await store.refreshPosts(for: feed)
+        XCTAssertEqual(store.selectedSort, .rising)
+    }
+
+    @MainActor
+    func testCancelledPreferenceReadLeavesCurrentFeedAlone() async throws {
+        try await checkStalePreferenceRead(cancelOldLoad: true)
+    }
+
+    @MainActor
+    func testSupersededPreferenceReadLeavesCurrentFeedAlone() async throws {
+        try await checkStalePreferenceRead(cancelOldLoad: false)
+    }
+
+    @MainActor
+    private func checkStalePreferenceRead(cancelOldLoad: Bool) async throws {
+        let backing = InMemoryPersistenceStore()
+        let persistence = PausedFeedPreferenceStore(backing: backing, feedKey: "community:swift")
+        let settings = Self.sortSettings(rememberCommunity: true)
+        let client = FixtureRedditClient(listingData: Self.listingJSON(ids: ["a"], after: nil))
+        let swift = FeedDescriptorModel(kind: .community, name: "swift")
+        let apple = FeedDescriptorModel(kind: .community, name: "apple")
+        try await backing.saveFeedPreference(
+            FeedSortPreference(sort: .top, topTime: .week),
+            feedKey: "community:swift", accountScope: "anonymous")
+        try await backing.saveFeedPreference(
+            FeedSortPreference(sort: .new), feedKey: "community:apple", accountScope: "anonymous")
+        let store = OctonautFeatureStore(reddit: client, settings: settings, persistence: persistence)
+        await store.refreshPosts(for: apple)
+        let oldLoad = Task { await store.refreshPosts(for: swift) }
+        await persistence.waitForRead()
+        if cancelOldLoad {
+            // No replacement request: cancellation alone must reject the result.
+            oldLoad.cancel()
+        } else {
+            store.clearVisibleFeed()
+            await store.refreshPosts(for: apple)
+        }
+        XCTAssertEqual(store.selectedSort, .new)
+        XCTAssertEqual(store.feedState, .loaded)
+        let currentPosts = store.posts.map(\.id)
+        await persistence.resumeRead()
+        await oldLoad.value
+        XCTAssertEqual(store.selectedSort, .new)
+        XCTAssertEqual(store.feedState, .loaded)
+        XCTAssertEqual(store.posts.map(\.id), currentPosts)
+    }
+}
+
+/// Holds one preference read until the test has switched feeds.
+private actor PausedFeedPreferenceStore: PersistenceStore {
+    let backing: InMemoryPersistenceStore
+    private var pausedFeedKey: String?
+    private var readStarted = false
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var readContinuation: CheckedContinuation<Void, Never>?
+
+    init(backing: InMemoryPersistenceStore, feedKey: String) {
+        self.backing = backing
+        pausedFeedKey = feedKey
+    }
+
+    func waitForRead() async {
+        if readStarted { return }
+        await withCheckedContinuation { startContinuation = $0 }
+    }
+
+    func resumeRead() {
+        readContinuation?.resume()
+        readContinuation = nil
+    }
+
+    func loadFeedPreference(feedKey: String, accountScope: String) async throws -> FeedSortPreference? {
+        if feedKey == pausedFeedKey {
+            pausedFeedKey = nil
+            readStarted = true
+            startContinuation?.resume()
+            startContinuation = nil
+            // Ignore cancellation so the caller must reject the stale result itself.
+            await withCheckedContinuation { readContinuation = $0 }
+        }
+        return try await backing.loadFeedPreference(feedKey: feedKey, accountScope: accountScope)
+    }
+
+    func loadAccounts() async throws -> [Account] {
+        return try await backing.loadAccounts()
+    }
+
+    func saveAccount(_ account: Account) async throws {
+        try await backing.saveAccount(account)
+    }
+
+    func deleteAccount(_ id: AccountID) async throws {
+        try await backing.deleteAccount(id)
+    }
+
+    func loadSeenPostIDs() async throws -> [String] {
+        return try await backing.loadSeenPostIDs()
+    }
+
+    func markPostSeen(_ id: String, seenAt: Date) async throws {
+        try await backing.markPostSeen(id, seenAt: seenAt)
+    }
+
+    func removePostSeen(_ id: String) async throws {
+        try await backing.removePostSeen(id)
+    }
+
+    func clearSeenPosts() async throws {
+        try await backing.clearSeenPosts()
+    }
+
+    func loadDrafts(accountID: AccountID?) async throws -> [Draft] {
+        return try await backing.loadDrafts(accountID: accountID)
+    }
+
+    func saveDraft(_ draft: Draft) async throws {
+        try await backing.saveDraft(draft)
+    }
+
+    func deleteDraft(_ id: UUID) async throws {
+        try await backing.deleteDraft(id)
+    }
+
+    func clearDrafts(accountID: AccountID?) async throws {
+        try await backing.clearDrafts(accountID: accountID)
+    }
+
+    func saveFeedPreference(_ preference: FeedSortPreference, feedKey: String, accountScope: String) async throws {
+        try await backing.saveFeedPreference(preference, feedKey: feedKey, accountScope: accountScope)
+    }
+
+    func loadUsageStatistics() async throws -> UsageStatistics {
+        return try await backing.loadUsageStatistics()
+    }
+
+    func incrementStatistic(_ counter: UsageStatistic, by amount: Int) async throws {
+        try await backing.incrementStatistic(counter, by: amount)
+    }
+
+    func beginUsageSession() async {
+        await backing.beginUsageSession()
+    }
+
+    func recordCommunityVisit(_ community: String) async throws {
+        try await backing.recordCommunityVisit(community)
+    }
+
+    func resetUsageStatistics() async throws {
+        try await backing.resetUsageStatistics()
+    }
+
+    func removeAllData() async throws {
+        try await backing.removeAllData()
+    }
+}

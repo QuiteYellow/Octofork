@@ -940,6 +940,7 @@ final class OctonautFeatureStore {
     /// so a sort chosen while reading is not immediately overwritten by the
     /// stored one.
     @ObservationIgnored private var sortResolvedForFeedKey: String?
+    @ObservationIgnored private var sortResolvedSettingsRevision: UInt?
     @ObservationIgnored private var detailCache: [DetailCacheKey: DetailCacheEntry] = [:]
     @ObservationIgnored private let detailCacheFreshness: TimeInterval = 10 * 60
     @ObservationIgnored private let detailCacheCapacity = 20
@@ -1149,11 +1150,17 @@ final class OctonautFeatureStore {
     }
 
     func refreshPosts(for descriptor: FeedDescriptorModel = .popular, forceRefresh: Bool = false) async {
-        if screenshotMode { return }
-        // Before the cache key is computed, since the key carries the sort.
-        await resolveStoredSort(for: descriptor)
+        if screenshotMode || Task.isCancelled { return }
         let requestID = UUID()
         feedRequestID = requestID
+        let selectedAccountID = accountID
+        let selectedGeneration = accountGeneration
+        let sortSettingsRevision = settings?.feedSortPreferenceRevision
+        // Resolve before computing the cache key, but keep the lookup tied to this load.
+        await resolveStoredSort(for: descriptor, requestID: requestID)
+        guard feedRequestID == requestID, !Task.isCancelled,
+              isCurrentAccount(selectedAccountID, generation: selectedGeneration),
+              settings?.feedSortPreferenceRevision == sortSettingsRevision else { return }
         let filterRevision = Int(settings?.filterRevision ?? 0)
         let cacheKey = feedCacheKey(for: descriptor)
         var hasWarmContent = loadedFeed == descriptor && !posts.isEmpty
@@ -1185,8 +1192,6 @@ final class OctonautFeatureStore {
             return
         }
 
-        let selectedAccountID = accountID
-        let selectedGeneration = accountGeneration
         do {
             let listing = try await reddit.listing(
                 ListingRequest(
@@ -1894,10 +1899,20 @@ final class OctonautFeatureStore {
         return configured == .default ? .best : configured
     }
 
+    private func invalidateSortResolutionIfSettingsChanged() {
+        let revision = settings?.feedSortPreferenceRevision
+        guard sortResolvedSettingsRevision != revision else { return }
+        sortResolvedSettingsRevision = revision
+        sortResolvedForFeedKey = nil
+    }
+
     /// Applies the sort this feed was last read with, on arrival.
-    private func resolveStoredSort(for descriptor: FeedDescriptorModel) async {
+    private func resolveStoredSort(for descriptor: FeedDescriptorModel, requestID: UUID) async {
+        invalidateSortResolutionIfSettingsChanged()
         guard remembersSortAnywhere else { return }
         let scope = feedPreferenceAccountScope
+        let generation = accountGeneration
+        let settingsRevision = settings?.feedSortPreferenceRevision
         let storedKey = feedPreferenceKey(for: descriptor)
         // The latch carries the account, so switching account resolves again
         // instead of leaving the previous reader's sort in place.
@@ -1923,7 +1938,10 @@ final class OctonautFeatureStore {
 
         // The latch is claimed after the read, not before it: this suspends,
         // and in the meantime the reader can pick a sort or change account.
-        guard sortResolvedForFeedKey != latchKey, feedPreferenceAccountScope == scope else { return }
+        guard feedRequestID == requestID, !Task.isCancelled,
+              feedPreferenceAccountScope == scope, accountGeneration == generation,
+              settings?.feedSortPreferenceRevision == settingsRevision,
+              sortResolvedForFeedKey != latchKey else { return }
         sortResolvedForFeedKey = latchKey
         guard let stored else {
             applyDefaultSort()
@@ -1939,6 +1957,7 @@ final class OctonautFeatureStore {
     }
 
     private func rememberSort(for descriptor: FeedDescriptorModel) {
+        invalidateSortResolutionIfSettingsChanged()
         guard let key = feedPreferenceKey(for: descriptor), let persistence else { return }
         let scope = feedPreferenceAccountScope
         sortResolvedForFeedKey = "\(scope)|\(key)"
