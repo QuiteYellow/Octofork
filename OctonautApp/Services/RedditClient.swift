@@ -120,6 +120,7 @@ actor URLSessionRedditClient: RedditClient {
     private let credentialVault: any AccountCredentialVault
     private let userAgent: String
     private var didBootstrapAnonymousSession = false
+    private var anonymousBootstrapTask: Task<Bool, Never>?
     private var isMoreCommentsRequestInFlight = false
     private var moreCommentsRequestWaiters: [CheckedContinuation<Void, Never>] = []
 
@@ -578,6 +579,10 @@ actor URLSessionRedditClient: RedditClient {
     ///   2026-09-28.
     private func bootstrapAnonymousSessionIfNeeded() async {
         guard !didBootstrapAnonymousSession else { return }
+        if let task = anonymousBootstrapTask {
+            _ = await task.value
+            return
+        }
         guard let url = URL(string: "https://www.reddit.com/") else { return }
         var request = URLRequest(url: url)
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
@@ -585,20 +590,20 @@ actor URLSessionRedditClient: RedditClient {
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             forHTTPHeaderField: "Accept"
         )
-        // The reader's own language, so the seed is not pinned to one locale.
         if let language = Locale.preferredLanguages.first {
             request.setValue("\(language),en;q=0.9", forHTTPHeaderField: "Accept-Language")
         }
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        guard let (_, response) = try? await session.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode)
-        else {
-            // Left unset on purpose: the next request seeds again instead of
-            // spending the process assuming cookies it never received.
-            return
+        let task = Task { [session, request] in
+            guard let (_, response) = try? await session.data(for: request),
+                  let http = response as? HTTPURLResponse else { return false }
+            return (200..<300).contains(http.statusCode)
         }
-        didBootstrapAnonymousSession = true
+        anonymousBootstrapTask = task
+        // Only the caller that created this task updates the state. Other
+        // callers wait for the same request without clearing a later retry.
+        didBootstrapAnonymousSession = await task.value
+        anonymousBootstrapTask = nil
     }
 
     private func makeURL(path: String, query: [URLQueryItem], websiteHost: String? = nil) -> URL? {
