@@ -89,6 +89,7 @@ struct PostsRootView: View {
                 .accessibilityLabel("Add")
             }
         }
+        .onChange(of: dependencies.accounts.selectionGeneration) { _, _ in editingFeed = nil }
         .sheet(item: $editingFeed) { feed in
             CustomFeedEditorView(feed: feed, communities: store.communities) { saved in
                 if let index = dependencies.settings.customFeeds.firstIndex(where: { $0.id == saved.id }) {
@@ -181,7 +182,7 @@ struct PostsRootView: View {
         let row = OctonautCommunityRow(
             community: community,
             onFavorite: { store.toggleFavorite(communityID: community.id) },
-            onSubscribe: { store.toggleSubscribe(communityID: community.id) }
+            onSubscribe: { if dependencies.accounts.requireLogin() { store.toggleSubscribe(communityID: community.id) } }
         )
         Group {
             if let onSelectFeed {
@@ -313,10 +314,11 @@ struct FeedView: View {
                         ForEach(Array(visiblePosts.enumerated()), id: \.element.id) { index, post in
                             Group {
                                 if compactRows {
-                                    OctonautCompactPostRow(post: post, thumbnailOnRight: thumbnailOnRight, showsFlair: dependencies.settings.showPostFlair, blursNSFW: dependencies.settings.blurNSFWMedia, blursSpoilers: dependencies.settings.blurSpoilers, onVote: { value in performVote(postID: post.id, value: value) }, onSave: { performSave(postID: post.id) }, onOpen: { open(post) }, onCommunityOpen: { open(post) })
+                                    OctonautCompactPostRow(post: post, onUserOpen: { router.push($0) }, thumbnailOnRight: thumbnailOnRight, showsFlair: dependencies.settings.showPostFlair, blursNSFW: dependencies.settings.blurNSFWMedia, blursSpoilers: dependencies.settings.blurSpoilers, onVote: { value in performVote(postID: post.id, value: value) }, onSave: { performSave(postID: post.id) }, onOpen: { open(post) }, onCommunityOpen: { open(post) })
                                 } else {
                                     OctonautPostRow(
                                         post: post,
+                                        onUserOpen: { router.push($0) },
                                         showsFlair: dependencies.settings.showPostFlair,
                                         mediaPreloader: mediaPreloader,
                                         mediaMaximumHeight: usesWideInterface ? min(320, max(160, availableHeight * 0.45)) : nil,
@@ -409,9 +411,7 @@ struct FeedView: View {
                 compact: compactRows
             )
         }
-        .sheet(isPresented: $showingLogin) {
-            RedditLoginView(accounts: dependencies.accounts)
-        }
+        .loginRequiredModal(isPresented: $showingLogin)
         .sheet(item: $crosspostPost) { post in
             CrosspostComposerView(post: post)
         }
@@ -603,6 +603,7 @@ struct FeedView: View {
 
 @MainActor
 struct CommunityView: View {
+    @Environment(AppDependencies.self) private var dependencies
     let name: String
     let store: OctonautFeatureStore
     let router: OctonautFeatureRouter
@@ -620,7 +621,7 @@ struct CommunityView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if let community {
-                        Button { store.toggleSubscribe(communityID: community.id) } label: {
+                        Button { if dependencies.accounts.requireLogin() { store.toggleSubscribe(communityID: community.id) } } label: {
                             Label(community.isSubscribed ? "Joined" : "Join", systemImage: community.isSubscribed ? "checkmark" : "person.badge.plus")
                         }
                     }
