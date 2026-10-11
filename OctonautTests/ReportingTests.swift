@@ -239,3 +239,122 @@ private final class InboxRequestProtocol: URLProtocol, @unchecked Sendable {
     }
     override func stopLoading() {}
 }
+
+final class ForbiddenMutationTests: XCTestCase {
+    override func tearDown() {
+        ForbiddenMutationProtocol.reset()
+        super.tearDown()
+    }
+
+    private func makeClient(vault: InMemoryCredentialVault) -> URLSessionRedditClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ForbiddenMutationProtocol.self]
+        return URLSessionRedditClient(credentialVault: vault, sessionConfiguration: configuration)
+    }
+
+    func testForbiddenMutationWithExpiredSessionRequiresLogin() async throws {
+        let account = AccountID(rawValue: UUID())
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic", modhash: "old")])
+        // A signed-out identity response has no user name.
+        ForbiddenMutationProtocol.identity = (200, #"{"kind":"t2","data":{}}"#)
+        do {
+            _ = try await makeClient(vault: vault).perform(.vote(fullname: "t3_abc", direction: 1), account: account)
+            XCTFail("An expired session should not succeed")
+        } catch { XCTAssertEqual(error as? RedditClientError, .authenticationRequired) }
+        XCTAssertEqual(ForbiddenMutationProtocol.paths, ["/api/vote", "/user/me/about.json"])
+    }
+
+    func testForbiddenIdentityCheckRequiresLogin() async throws {
+        let account = AccountID(rawValue: UUID())
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic", modhash: "old")])
+        ForbiddenMutationProtocol.identity = (403, #"{"message":"Forbidden","error":403}"#)
+        do {
+            _ = try await makeClient(vault: vault).perform(.save(fullname: "t3_abc", saved: true), account: account)
+            XCTFail("An expired session should not succeed")
+        } catch { XCTAssertEqual(error as? RedditClientError, .authenticationRequired) }
+    }
+
+    func testForbiddenMutationRetriesOnceWithRefreshedModhash() async throws {
+        let account = AccountID(rawValue: UUID())
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic", modhash: "old")])
+        ForbiddenMutationProtocol.identity = (200, #"{"kind":"t2","data":{"name":"reader","modhash":"fresh"}}"#)
+        ForbiddenMutationProtocol.acceptedModhash = "fresh"
+        let result = try await makeClient(vault: vault).perform(.vote(fullname: "t3_abc", direction: 1), account: account)
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(ForbiddenMutationProtocol.paths, ["/api/vote", "/user/me/about.json", "/api/vote"])
+        XCTAssertEqual(ForbiddenMutationProtocol.modhashes, ["old", "fresh"])
+        let saved = try await vault.credential(for: account)
+        XCTAssertEqual(saved?.modhash, "fresh")
+        XCTAssertEqual(saved?.cookieValue, "synthetic")
+    }
+
+    func testForbiddenMutationWithValidSessionStaysAccessDenied() async throws {
+        let account = AccountID(rawValue: UUID())
+        let vault = InMemoryCredentialVault(values: [account: RedditCredential(cookieValue: "synthetic", modhash: "current")])
+        ForbiddenMutationProtocol.identity = (200, #"{"kind":"t2","data":{"name":"reader","modhash":"current"}}"#)
+        do {
+            _ = try await makeClient(vault: vault).perform(.vote(fullname: "t3_abc", direction: 1), account: account)
+            XCTFail("A genuine refusal should not succeed")
+        } catch { XCTAssertEqual(error as? RedditClientError, .accessDenied) }
+        XCTAssertEqual(ForbiddenMutationProtocol.paths, ["/api/vote", "/user/me/about.json"])
+    }
+}
+
+/// Rejects every mutation with 403 unless it carries `acceptedModhash`, and
+/// answers the identity check with the configured synthetic response.
+private final class ForbiddenMutationProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var _identity: (Int, String) = (200, "{}")
+    nonisolated(unsafe) private static var _acceptedModhash: String?
+    nonisolated(unsafe) private static var _paths: [String] = []
+    nonisolated(unsafe) private static var _modhashes: [String] = []
+
+    static var identity: (Int, String) {
+        get { lock.withLock { _identity } }
+        set { lock.withLock { _identity = newValue } }
+    }
+    static var acceptedModhash: String? {
+        get { lock.withLock { _acceptedModhash } }
+        set { lock.withLock { _acceptedModhash = newValue } }
+    }
+    static var paths: [String] { lock.withLock { _paths } }
+    static var modhashes: [String] { lock.withLock { _modhashes } }
+
+    static func reset() {
+        lock.withLock {
+            _identity = (200, "{}")
+            _acceptedModhash = nil
+            _paths = []
+            _modhashes = []
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        XCTAssertEqual(request.url?.host, "www.reddit.com")
+        XCTAssertEqual(request.url?.scheme, "https")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "reddit_session=synthetic")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        let path = request.url?.path ?? ""
+        let modhash = request.value(forHTTPHeaderField: "X-Modhash")
+        Self.lock.withLock {
+            Self._paths.append(path)
+            if let modhash { Self._modhashes.append(modhash) }
+        }
+        let status: Int
+        let body: String
+        if request.httpMethod == "GET" {
+            (status, body) = Self.identity
+        } else if let accepted = Self.acceptedModhash, modhash == accepted {
+            (status, body) = (200, "{}")
+        } else {
+            (status, body) = (403, #"{"message":"Forbidden","error":403}"#)
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}

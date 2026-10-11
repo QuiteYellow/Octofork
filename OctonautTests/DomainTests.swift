@@ -38,6 +38,39 @@ private actor ControlledSubscriptionService: AuthenticatedRedditService {
 
 final class DomainTests: XCTestCase {
     @MainActor
+    func testSetVoteSendsVoteForPostOutsideTheFeed() async throws {
+        let account = AccountID()
+        let service = ControlledSubscriptionService()
+        let store = OctonautFeatureStore(
+            reddit: FixtureRedditClient(), authenticated: service, accountID: account)
+
+        let vote = Task { try await store.setVote(1, previous: 0, postID: "abc123", accountID: account) }
+        await service.waitForRequest()
+        await service.complete(ActionResult(succeeded: true))
+        try await vote.value
+
+        let requests = await service.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.account, account)
+        if case .vote(let fullname, let direction) = requests.first?.action {
+            XCTAssertEqual(fullname, "t3_abc123")
+            XCTAssertEqual(direction, 1)
+        } else { XCTFail("Expected a vote action") }
+    }
+
+    @MainActor
+    func testSetVoteIgnoresAnotherAccount() async throws {
+        let service = ControlledSubscriptionService()
+        let store = OctonautFeatureStore(
+            reddit: FixtureRedditClient(), authenticated: service, accountID: AccountID())
+
+        try await store.setVote(1, previous: 0, postID: "abc123", accountID: AccountID())
+
+        let requests = await service.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    @MainActor
     func testSubscriptionSuccessInvalidatesCacheAndReloadsCommunities() async throws {
         let account = AccountID()
         let client = FixtureRedditClient(communitiesData: subscriptionFixture)
@@ -728,6 +761,23 @@ final class DomainTests: XCTestCase {
             RedditPostMarkdown.previewText(from: "|Thread|Votes|\n|:-|:-|\n|A long story|42|"),
             ""
         )
+    }
+
+    func testRawMarkdownBodiesKeepAngleBracketsAndEscapes() throws {
+        let data = Data(
+            ##"[{"data":{"children":[{"kind":"t3","data":{"id":"thread","name":"t3_thread","permalink":"/r/swift/comments/thread/update/","title":"Update","subreddit":"swift","is_self":true,"selftext":"    let a = Vec<String>\nif a < b and c > d, print(\"\\n\") &amp; <https://example.com>\n"}}]}},{"data":{"children":[{"kind":"t1","data":{"id":"comment","name":"t1_comment","parent_id":"t3_thread","author":"reader","body":"x < y > z","body_html":"<p>x &lt; y &gt; z</p>","replies":""}},{"kind":"t1","data":{"id":"html","name":"t1_html","parent_id":"t3_thread","author":"reader","body_html":"<p>Only &lt;html&gt;</p>","replies":""}}]}}]"##.utf8
+        )
+
+        let thread = try RedditJSONCodec.decodeThread(data)
+        XCTAssertEqual(
+            thread.post.body?.plainText,
+            #"    let a = Vec<String>"# + "\n" + #"if a < b and c > d, print("\n") &amp; <https://example.com>"#
+        )
+        let bodies = thread.comments.compactMap { node -> String? in
+            guard case .comment(let comment) = node else { return nil }
+            return comment.body?.plainText
+        }
+        XCTAssertEqual(bodies, ["x < y > z", "Only <html>"])
     }
 
     func testPostCardPreservesRedditFlairMetadata() throws {

@@ -842,3 +842,60 @@ struct OctonautDestinationView: View {
         .environment(AppDependencies.preview())
         .environment(\.horizontalSizeClass, .regular)
 }
+
+/// Votes and saves for rows a screen keeps itself, such as search results and
+/// profile lists. The row changes straight away and is put back when Reddit
+/// rejects the change, unless a later tap has already replaced it.
+@MainActor
+struct DetachedPostActions {
+    let store: OctonautFeatureStore
+    let accounts: AccountCoordinator
+
+    func vote(postID: String, value: Int, in posts: Binding<[PostCardModel]>) {
+        guard accounts.requireLogin(), let accountID = accounts.selectedAccountID,
+              let index = posts.wrappedValue.firstIndex(where: { $0.id == postID }) else { return }
+        let previous = posts.wrappedValue[index].vote
+        guard previous != value else { return }
+        posts.wrappedValue[index].vote = value
+        posts.wrappedValue[index].score += value - previous
+        let token = accounts.token(for: accountID)
+        Task {
+            do {
+                try await store.setVote(value, previous: previous, postID: postID, accountID: accountID)
+            } catch {
+                guard accounts.isCurrent(token) else { return }
+                if let index = posts.wrappedValue.firstIndex(where: { $0.id == postID }),
+                   posts.wrappedValue[index].vote == value {
+                    posts.wrappedValue[index].vote = previous
+                    posts.wrappedValue[index].score -= value - previous
+                }
+                await markNeedsLoginIfExpired(error, accountID: accountID)
+            }
+        }
+    }
+
+    func toggleSave(postID: String, in posts: Binding<[PostCardModel]>) {
+        guard accounts.requireLogin(), let accountID = accounts.selectedAccountID,
+              let index = posts.wrappedValue.firstIndex(where: { $0.id == postID }) else { return }
+        let saved = !posts.wrappedValue[index].isSaved
+        posts.wrappedValue[index].isSaved = saved
+        let token = accounts.token(for: accountID)
+        Task {
+            do {
+                try await store.setSaved(saved, postID: postID, accountID: accountID)
+            } catch {
+                guard accounts.isCurrent(token) else { return }
+                if let index = posts.wrappedValue.firstIndex(where: { $0.id == postID }),
+                   posts.wrappedValue[index].isSaved == saved {
+                    posts.wrappedValue[index].isSaved = !saved
+                }
+                await markNeedsLoginIfExpired(error, accountID: accountID)
+            }
+        }
+    }
+
+    private func markNeedsLoginIfExpired(_ error: any Error, accountID: AccountID) async {
+        guard let clientError = error as? RedditClientError, clientError == .authenticationRequired else { return }
+        await accounts.markNeedsLogin(accountID)
+    }
+}

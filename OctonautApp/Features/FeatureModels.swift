@@ -2220,6 +2220,30 @@ final class OctonautFeatureStore {
         }
     }
 
+    /// Sends a vote for a post the visible feed may not hold, such as a search
+    /// result or profile row. `performVote` does nothing when the post is
+    /// absent, so the caller passes the value to restore if Reddit rejects it.
+    func setVote(_ value: Int, previous: Int, postID: String, accountID: AccountID) async throws {
+        guard self.accountID == accountID else { return }
+        let generation = accountGeneration
+        let token = beginMutation("vote:\(postID)")
+        vote(postID: postID, value: value)
+        do {
+            let action = RedditAction.vote(
+                fullname: IDNormalization.fullname(postID, kind: "t3"), direction: value)
+            if let authenticated {
+                _ = try await authenticated.perform(action, accountID: accountID)
+            } else if let reddit {
+                _ = try await reddit.perform(action, account: accountID)
+            }
+        } catch {
+            if isCurrentAccount(accountID, generation: generation), isLatestMutation("vote:\(postID)", token) {
+                vote(postID: postID, value: previous)
+            }
+            throw error
+        }
+    }
+
     private func applySavedFlag(_ saved: Bool, postID: String) {
         if let index = posts.firstIndex(where: { $0.id == postID }) {
             posts[index].isSaved = saved

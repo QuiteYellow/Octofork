@@ -416,6 +416,14 @@ struct UserProfileView: View {
         }
     }
 
+    private var postActions: DetachedPostActions {
+        DetachedPostActions(store: store, accounts: dependencies.accounts)
+    }
+
+    private var profilePosts: Binding<[PostCardModel]> {
+        Bindable(store).userProfilePosts
+    }
+
     @ViewBuilder
     private var profileContent: some View {
         switch selectedSection {
@@ -431,7 +439,9 @@ struct UserProfileView: View {
                             onUserOpen: { router.push($0) },
                             showsFlair: dependencies.settings.showPostFlair,
                             blursNSFW: dependencies.settings.blurNSFWMedia,
-                            blursSpoilers: dependencies.settings.blurSpoilers
+                            blursSpoilers: dependencies.settings.blurSpoilers,
+                            onVote: { postActions.vote(postID: post.id, value: $0, in: profilePosts) },
+                            onSave: { postActions.toggleSave(postID: post.id, in: profilePosts) }
                         )
                     }
                     .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))
@@ -618,6 +628,10 @@ struct UserSectionView: View {
         }
     }
 
+    private var postActions: DetachedPostActions {
+        DetachedPostActions(store: store, accounts: dependencies.accounts)
+    }
+
     private var taskID: String {
         "\(username):\(section.rawValue):\(content.rawValue):\(store.accountContextKey)"
     }
@@ -633,7 +647,16 @@ struct UserSectionView: View {
                         onUserOpen: { router.push($0) },
                         showsFlair: dependencies.settings.showPostFlair,
                         blursNSFW: dependencies.settings.blurNSFWMedia,
-                        blursSpoilers: dependencies.settings.blurSpoilers
+                        blursSpoilers: dependencies.settings.blurSpoilers,
+                        onVote: { postActions.vote(postID: post.id, value: $0, in: $posts) },
+                        onSave: {
+                            // Unsaving from Saved removes the row, as the swipe action does.
+                            if section == .saved, post.isSaved {
+                                unsave(post)
+                            } else {
+                                postActions.toggleSave(postID: post.id, in: $posts)
+                            }
+                        }
                     )
                 }
                 .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 14))

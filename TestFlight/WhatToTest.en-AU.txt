@@ -4,6 +4,8 @@ Fixed crash when saving media to Photos.
 Joining and leaving communities now saves reliably to Reddit.
 Private messages now send, with a subject field.
 Inbox compose and profile New Post now open properly.
+Long community names now fit in the title bar.
+Join a community from its header or ••• menu.
 Inbox items open full messages, replies, and conversations.
 Replying in a conversation now replies to the thread.
 Inbox Messages filter and mark read now work.
@@ -44,6 +46,9 @@ Private, banned and quarantined communities now say so.
 "Continue this thread" now opens the rest of the thread.
 Inbox now loads older messages as you scroll.
 Report to Reddit for breaking Reddit's rules.
+Posts and comments no longer lose text between < and >.
+Expired logins now ask you to sign in again.
+Vote and save now work in search and profiles.
 
 Changes in previous builds:
 Fix: user profile tap zone is too big on post cards
