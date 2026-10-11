@@ -265,7 +265,6 @@ struct PostDetailView: View {
         crosspostPost = currentPost
     }
 
-    @ViewBuilder
     /// Reddit marks a reply chain too deep to inline with a "more" stub that
     /// has no child IDs. It can only be read from the parent comment's page.
     private func continueThreadURL(_ comment: CommentCardModel) -> URL? {

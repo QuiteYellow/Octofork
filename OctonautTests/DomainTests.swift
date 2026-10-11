@@ -2220,6 +2220,30 @@ extension DomainTests {
     }
 
     @MainActor
+    func testBlockingHidesLoadedPostsAndCommentsByThatAuthor() async throws {
+        let account = AccountID()
+        let store = OctonautFeatureStore(reddit: FixtureRedditClient(), accountID: account)
+        store.posts = [.sample, .mediaSample]
+        store.comments = CommentCardModel.samples
+        store.filteredPostCount = 0
+
+        try await store.performProfileAction(.block(username: "Example_Author", blocked: true), username: "Example_Author", accountID: account)
+        store.applyBlock(true, username: "swift_reader")
+
+        XCTAssertEqual(store.posts.map(\.author), ["pixel_wrangler"])
+        XCTAssertEqual(store.filteredPostCount, 1)
+        XCTAssertFalse(store.comments.contains { $0.author == "swift_reader" })
+        XCTAssertFalse(store.comments.flatMap(\.children).contains { $0.id == "t1_comment-1a" })
+        XCTAssertTrue(store.comments.contains { $0.author == "paperback" })
+
+        store.applyBlock(false, username: "example_author")
+        XCTAssertFalse(store.isBlockedAuthor("example_author"))
+        XCTAssertTrue(store.isBlockedAuthor("SWIFT_READER"))
+        store.setAccountID(AccountID())
+        XCTAssertTrue(store.blockedAuthors.isEmpty)
+    }
+
+    @MainActor
     func testFailedProfileActionPreservesRelationshipState() async {
         let account = AccountID()
         let client = FixtureRedditClient(actionResult: ActionResult(succeeded: false, message: "Action denied"))

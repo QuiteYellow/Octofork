@@ -1195,6 +1195,60 @@ final class OctonautFeatureStore {
         accountID == id && accountGeneration == generation
     }
 
+    /// Lowercased usernames blocked from the selected account this session.
+    /// Their posts and comments are removed from loaded content right away and
+    /// filtered out of later loads, rather than waiting for Reddit to stop
+    /// returning them.
+    private(set) var blockedAuthors: Set<String> = []
+
+    func isBlockedAuthor(_ username: String) -> Bool {
+        !blockedAuthors.isEmpty && blockedAuthors.contains(username.lowercased())
+    }
+
+    /// Hides a newly blocked author's posts and comments everywhere the store
+    /// holds them. Unblocking stops the filtering and drops cached pages so
+    /// their content can return on the next load.
+    func applyBlock(_ blocked: Bool, username: String) {
+        let author = username.lowercased()
+        guard blocked else {
+            guard blockedAuthors.remove(author) != nil else { return }
+            feedCache.removeAll()
+            detailCache.removeAll()
+            visibleDetailKey = nil
+            return
+        }
+        blockedAuthors.insert(author)
+        let visibleCount = posts.count
+        posts.removeAll { isBlockedAuthor($0.author) }
+        filteredPostCount += visibleCount - posts.count
+        comments = withoutBlockedAuthors(comments)
+        feedCache = feedCache.mapValues { entry in
+            let kept = entry.posts.filter { !isBlockedAuthor($0.author) }
+            return FeedCacheEntry(
+                posts: kept,
+                filteredPostCount: entry.filteredPostCount + entry.posts.count - kept.count,
+                nextPage: entry.nextPage,
+                filterRevision: entry.filterRevision,
+                storedAt: entry.storedAt
+            )
+        }
+        detailCache = detailCache.mapValues { entry in
+            DetailCacheEntry(post: entry.post, comments: withoutBlockedAuthors(entry.comments), storedAt: entry.storedAt)
+        }
+    }
+
+    /// Drops blocked authors' comments along with their reply threads, which
+    /// would otherwise hang off a missing parent.
+    private func withoutBlockedAuthors(_ values: [CommentCardModel]) -> [CommentCardModel] {
+        guard !blockedAuthors.isEmpty else { return values }
+        return values.compactMap { comment in
+            guard comment.isMoreNode || comment.isDeleted || !isBlockedAuthor(comment.author) else { return nil }
+            var comment = comment
+            comment.children = withoutBlockedAuthors(comment.children)
+            return comment
+        }
+    }
+
     /// Invalidate pending work before changing the visible selection.
     func clearVisibleFeed(isLoading: Bool = true) {
         feedRequestID = UUID()
@@ -1624,13 +1678,13 @@ final class OctonautFeatureStore {
                 posts[index].isSaved = freshPost.isSaved
                 updateLoadedFeedCache()
             }
-            comments = thread.comments.map { node in
+            comments = withoutBlockedAuthors(thread.comments.map { node in
                 switch node {
                 case .comment(let comment): return CommentCardModel(comment: comment)
                 case .more(let more): return CommentCardModel.more(more, depth: 0)
                 case .deleted(let deleted): return CommentCardModel.deleted(deleted, depth: 0)
                 }
-            }
+            })
             moreFailedIDs.removeAll()
             detailState = .loaded
             visibleDetailKey = key
@@ -1684,7 +1738,7 @@ final class OctonautFeatureStore {
             guard detailRequestID == requestID, !Task.isCancelled,
                   isCurrentAccount(selectedAccountID, generation: selectedGeneration) else { return }
 
-            var replacements = nodes.map { node -> CommentCardModel in
+            var replacements = withoutBlockedAuthors(nodes.map { node -> CommentCardModel in
                 switch node {
                 case .comment(let comment):
                     return CommentCardModel(comment: comment, depth: placeholder.depth)
@@ -1693,7 +1747,7 @@ final class OctonautFeatureStore {
                 case .deleted(let deleted):
                     return CommentCardModel.deleted(deleted, depth: placeholder.depth)
                 }
-            }
+            })
             if !remainingChildIDs.isEmpty {
                 let remainingCount = max(
                     remainingChildIDs.count,
@@ -1856,8 +1910,9 @@ final class OctonautFeatureStore {
                 .split(separator: ",")
                 .map { IDNormalization.community(String($0)) }
                 .filter { !$0.isEmpty })
+        let unblocked = values.filter { post in post.author.map { !isBlockedAuthor($0.username) } ?? true }
         let deterministic = DeterministicPostFilter.apply(
-            values,
+            unblocked,
             configuration: DeterministicFilterConfiguration(
                 blockedCommunities: blockedCommunities,
                 keywordRules: keywordTerms.isEmpty ? [] : [KeywordFilterRule(terms: keywordTerms)],
@@ -1872,7 +1927,7 @@ final class OctonautFeatureStore {
                 ?? SemanticFilterEngine.defaultInstruction,
             !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            return (deterministic.visible, deterministic.removedCount)
+            return (deterministic.visible, deterministic.removedCount + values.count - unblocked.count)
         }
 
         let rule = SemanticRule(
@@ -1892,6 +1947,7 @@ final class OctonautFeatureStore {
         guard self.accountID != accountID else { return }
         self.accountID = accountID
         accountGeneration &+= 1
+        blockedAuthors.removeAll()
         feedCache.removeAll()
         detailCache.removeAll()
         visibleDetailKey = nil
@@ -2186,6 +2242,9 @@ final class OctonautFeatureStore {
             throw RedditClientError.reddit(errors: [result.message ?? "Reddit could not complete this action."])
         }
         await UserProfileCache.shared.remove(for: accountID)
+        if case .block(_, let blocked) = action, isCurrentAccount(accountID, generation: generation) {
+            applyBlock(blocked, username: username)
+        }
         guard isCurrentAccount(accountID, generation: generation),
               userProfile?.reference.username.caseInsensitiveCompare(username) == .orderedSame else { return }
         switch action {
