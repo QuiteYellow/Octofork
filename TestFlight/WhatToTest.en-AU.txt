@@ -3,6 +3,7 @@ Comment headers collapse and expand again.
 Fixed crash when saving media to Photos.
 Joining and leaving communities now saves reliably to Reddit.
 Private messages now send, with a subject field.
+Inbox compose and profile New Post now open properly.
 Inbox items open full messages, replies, and conversations.
 Replying in a conversation now replies to the thread.
 Inbox Messages filter and mark read now work.

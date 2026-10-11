@@ -161,6 +161,7 @@ struct UserProfileView: View {
     @Environment(\.openURL) private var openURL
     @State private var showingLogin = false
     @State private var messageRecipient: ProfileMessageRecipient?
+    @State private var showingNewPost = false
     @State private var confirmingBlock = false
     @State private var confirmingLogOut = false
     @State private var actionInProgress = false
@@ -255,6 +256,9 @@ struct UserProfileView: View {
             NavigationStack {
                 ComposerView(kind: .message, store: store, recipient: recipient.username)
             }
+        }
+        .sheet(isPresented: $showingNewPost) {
+            ComposerView(kind: .post, store: store)
         }
         .confirmationDialog("\(profile?.isBlocked == true ? "Unblock" : "Block") u/\(username)?", isPresented: $confirmingBlock, titleVisibility: .visible) {
             Button(profile?.isBlocked == true ? "Unblock user" : "Block user", role: profile?.isBlocked == true ? nil : .destructive) {
@@ -367,7 +371,7 @@ struct UserProfileView: View {
             .overlay(alignment: .topTrailing) {
                 if let onAddAccount {
                     Menu {
-                        Button { router.push(.composer(.post)) } label: {
+                        Button { showingNewPost = true } label: {
                             Label("New Post", systemImage: "square.and.pencil")
                         }
                         Section("Switch Account") {
